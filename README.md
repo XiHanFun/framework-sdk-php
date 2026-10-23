@@ -22,7 +22,7 @@
 
 ## 包名
 
-`xihan/framework`（Packagist）。领域词与规范术语表（`conventions/vocabulary.md`）一致，只换本语言的大小写风格。
+`xihanfun/xihan-framework`（Packagist）。领域词与规范术语表（`conventions/vocabulary.md`）一致，只换本语言的大小写风格。
 
 ## 成熟度
 
