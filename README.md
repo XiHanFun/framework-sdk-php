@@ -36,7 +36,7 @@ Reference（.NET）、Stable（通过全部向量）、Experimental（部分向�
 
 ## 发布占位版本
 
-Packagist 的 vendor 名 `xihanfun` 归第一个提交 `xihanfun/...` 包的人；本仓库已含最小包（`composer.json` + `src/Framework.php`，只导出 `VERSION` 与 `SPEC_VERSION`）。用 GitHub 登录 packagist.org，在 Submit 页面提交仓库地址 `https://github.com/XiHanFun/framework-sdk-php`，然后在包页面开启 GitHub hook 自动更新；没有标签时显示 `dev-main`，不影响占名。
+**已提交**：[Packagist 上的 `xihanfun/xihan-framework`](https://packagist.org/packages/xihanfun/xihan-framework)（2026-10-23，GitHub hook 自动更新，当前 `dev-main`），vendor `xihanfun` 已归本组织。Packagist 的 vendor 名 `xihanfun` 归第一个提交 `xihanfun/...` 包的人；本仓库已含最小包（`composer.json` + `src/Framework.php`，只导出 `VERSION` 与 `SPEC_VERSION`）。用 GitHub 登录 packagist.org，在 Submit 页面提交仓库地址 `https://github.com/XiHanFun/framework-sdk-php`，然后在包页面开启 GitHub hook 自动更新；没有标签时显示 `dev-main`，不影响占名。
 
 ## 许可
 
