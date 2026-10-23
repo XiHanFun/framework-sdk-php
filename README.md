@@ -34,6 +34,10 @@ Reference（.NET）、Stable（通过全部向量）、Experimental（部分向�
 2. 在本仓库开 Issue 认领要实现的包，一个包一个 PR，附向量测试。
 3. 公开契约的变更不在 SDK 仓库里做：走 framework-spec 的 RFC 流程，再同步到各 SDK。
 
+## 发布占位版本
+
+Packagist 的 vendor 名 `xihanfun` 归第一个提交 `xihanfun/...` 包的人；本仓库已含最小包（`composer.json` + `src/Framework.php`，只导出 `VERSION` 与 `SPEC_VERSION`）。用 GitHub 登录 packagist.org，在 Submit 页面提交仓库地址 `https://github.com/XiHanFun/framework-sdk-php`，然后在包页面开启 GitHub hook 自动更新；没有标签时显示 `dev-main`，不影响占名。
+
 ## 许可
 
 [MIT](LICENSE)
