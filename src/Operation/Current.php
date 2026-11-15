@@ -1,0 +1,67 @@
+<?php
+
+declare(strict_types=1);
+
+namespace XiHan\Framework\Operation;
+
+use XiHan\Framework\Invocation\Context;
+
+/**
+ * 当前调用的操作信息：Invoker 在进入管道前写进上下文的对象袋，供管道里的中间件读取（RFC-0011 调用器规则 1、3）。
+ */
+final class Current
+{
+    /** @internal 对象袋里放描述的键 */
+    public const string DESCRIPTOR_KEY = self::class . '::descriptor';
+
+    /** @internal 对象袋里放 XGI 请求的键 */
+    public const string REQUEST_KEY = self::class . '::request';
+
+    /** @internal 对象袋里放响应载荷的键 */
+    public const string RESPONSE_KEY = self::class . '::response';
+
+    /** @internal 对象袋里放类型化调用终点的键 */
+    public const string TERMINAL_KEY = self::class . '::terminal';
+
+    private function __construct()
+    {
+    }
+
+    /**
+     * 返回当前调用的操作描述；不在操作调用里时为 null。
+     */
+    public static function descriptor(Context $context): ?Descriptor
+    {
+        $descriptor = $context->items()->get(self::DESCRIPTOR_KEY);
+
+        return $descriptor instanceof Descriptor ? $descriptor : null;
+    }
+
+    /**
+     * 返回当前调用的 XGI 请求；类型化调用的请求只有 ID、载荷为空。不在操作调用里时为 null。
+     */
+    public static function request(Context $context): ?Request
+    {
+        $request = $context->items()->get(self::REQUEST_KEY);
+
+        return $request instanceof Request ? $request : null;
+    }
+
+    /**
+     * 返回 handle 阶段写回的响应载荷（成功时）；还没有时为 null。
+     */
+    public static function responsePayload(Context $context): ?string
+    {
+        $payload = $context->items()->get(self::RESPONSE_KEY);
+
+        return is_string($payload) ? $payload : null;
+    }
+
+    /**
+     * 写回响应载荷：handle 阶段由调用器写入；幂等回放这类不执行处理函数的中间件也用它交出记录的响应。
+     */
+    public static function setResponsePayload(Context $context, string $payload): void
+    {
+        $context->items()->set(self::RESPONSE_KEY, $payload);
+    }
+}
