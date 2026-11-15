@@ -71,7 +71,7 @@ echo json_encode($response->outcome), ' ', $response->payload; // {"ok":true} {"
 ```
 
 1. 操作用 `Registry::add` 登记：契约、处理函数、`Codec` 与可选的 `Schema`。PHP 没有不经反射的类型化 JSON 解码，所以 `Codec::typed` 显式给出请求与响应的类型名和解码函数；不需要类型时用缺省的 `Codec::json()`，请求就是 JSON 对象解码成的关联数组。
-2. 可恢复失败返回 `Result::fail(...)`，不抛异常；错误码按 `<领域大写>_<KIND>_<NNN>`，文案用消息键，`Error::message()` 经 `MessageScope::setDefault(new MessageCatalog([...]), 'zh-CN')` 设置的目录按区域解析，没有时是「键 (参数)」。模板按 RFC-0010「模板」格式化：可移植的格式说明符是 `D`、`X` / `x`、`F`、`N`（不变文化，`F` 与 `N` 按浮点数的精确值舍入、正好一半取偶，`{n:F2}` 取 0.125 得 `0.12`、取 2.675 得 `2.67`），其余说明符（含 printf 写法）按无格式输出；值为 `null` 写空串、浮点在 1e-4 到 1e15 之间写最短往返形式；消息键最长 128 个字符。
+2. 可恢复失败返回 `Result::fail(...)`，不抛异常；错误码按 `<领域大写>_<KIND>_<NNN>`，文案用消息键，`Error::message()` 经 `MessageScope::setDefault(new MessageCatalog([...]), 'zh-CN')` 设置的目录按区域解析，没有时是「键 (参数)」。内核错误的码、键、参数与 en-US 模板与规范的共用表（`kernel-messages.json`）逐字一致，`KernelMessages` 自带这些英文模板：目录解析不出内核键时用它们，配置期异常的消息也用它们写成英文。模板按 RFC-0010「模板」格式化：可移植的格式说明符是 `D`、`X` / `x`、`F`、`N`（不变文化，`F` 与 `N` 按浮点数的精确值舍入、正好一半取偶，`{n:F2}` 取 0.125 得 `0.12`、取 2.675 得 `2.67`），其余说明符（含 printf 写法）按无格式输出；值为 `null` 写空串、浮点在 1e-4 到 1e15 之间写最短往返形式；消息键最长 128 个字符。
 3. 编程错误与配置错误抛带错误码的异常（`FrameworkException` 接口）：参数非法是 `InvalidArgumentException`，清单文件、管道约束与操作重复登记这类装配错误是 `ConfigurationException`，强行从失败的 `Result` 取值是 `FailureException`。
 4. 中间件与处理函数的签名是同步的，可以运行在 Fiber 里。取消令牌可轮询、可登记回调：`$context->cancellation()->isRequested()`，`$context->cancellationError()` 给出 `KERNEL_TIMEOUT_001` 或 `KERNEL_CANCELLED_001`；没有事件循环时截止时间在轮询时核对时钟，接入事件循环时宿主在截止时刻调用 `DeadlineCancellation::poll()`。
 5. `Invoker::invokeTyped($context, $id, $request, $responseType)` 不经 JSON 直接以请求对象执行，类型与登记不符返回 `KERNEL_VALIDATION_002`。

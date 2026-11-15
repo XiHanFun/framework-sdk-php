@@ -7,6 +7,7 @@ namespace XiHan\Framework\Invocation;
 use XiHan\Framework\Primitives\BaggageKeys;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\KernelMessages;
 
 /**
  * 一次调用的上下文（RFC-0003）：取消与截止时间、W3C 追踪、Baggage 与请求作用域对象袋。
@@ -23,10 +24,10 @@ final class Context
     public const string ERROR_CODE_CANCELLED = 'KERNEL_CANCELLED_001';
 
     /** 超时的消息键。 */
-    public const string MESSAGE_DEADLINE_EXCEEDED = 'kernel.invocation.deadline_exceeded';
+    public const string MESSAGE_DEADLINE_EXCEEDED = KernelMessages::DEADLINE_EXCEEDED;
 
     /** 取消的消息键。 */
-    public const string MESSAGE_CANCELLED = 'kernel.invocation.cancelled';
+    public const string MESSAGE_CANCELLED = KernelMessages::CANCELLED;
 
     /** 相对超时的上限（秒，约 31.7 年）：再大就超出微秒整数的可靠范围 */
     private const float MAX_TIMEOUT = 1_000_000_000.0;

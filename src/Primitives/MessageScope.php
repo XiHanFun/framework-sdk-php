@@ -7,7 +7,8 @@ namespace XiHan\Framework\Primitives;
 /**
  * 进程默认的消息解析器与区域（RFC-0001 MessageScope.Default）。
  *
- * `Error::message()` 在没有已解析文案时用它；没有设置解析器时消息退回「键 (参数)」的描述。
+ * `Error::message()` 在没有已解析文案时用它；解析器解析不出时，内核消息键用 KernelMessages 的 en-US 模板，
+ * 其余退回「键 (参数)」的描述。
  * 这是进程级状态：PHP 没有抢占式线程，Fiber 只在挂起点切换，读写都是一步完成，不需要锁。
  */
 final class MessageScope
@@ -41,12 +42,13 @@ final class MessageScope
     }
 
     /**
-     * 用进程默认解析器与区域解析消息键；没有解析器或解析失败时返回 null。
+     * 用进程默认解析器与区域解析消息键；解析器解析不出的内核消息键用本 SDK 自带的 en-US 模板，
+     * 都没有或参数缺值时返回 null。
      *
      * @param array<array-key, mixed> $arguments
      */
     public static function resolve(string $key, array $arguments): ?string
     {
-        return self::$resolver?->resolve($key, self::$locale, $arguments);
+        return self::$resolver?->resolve($key, self::$locale, $arguments) ?? KernelMessages::english($key, $arguments);
     }
 }
