@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Tests\Primitives;
 
 use PHPUnit\Framework\TestCase;
+use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Primitives\BaggageKeys;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\LifecycleState;
@@ -46,6 +47,32 @@ final class VectorsTest extends TestCase
             self::assertTrue(BaggageKeys::isRegistered($key));
         }
         self::assertFalse(BaggageKeys::isRegistered('xihan.feature-flag'));
+    }
+
+    public function testBaggageValuesFollowTheVectors(): void
+    {
+        $values = Vectors::primitives('baggage-keys')['values'] ?? null;
+        self::assertIsArray($values);
+        $acceptable = Vectors::strings($values, 'acceptable');
+        $unacceptable = Vectors::strings($values, 'unacceptable');
+        foreach ($acceptable as $value) {
+            self::assertTrue(BaggageKeys::isAcceptableValue($value), sprintf('%s must be acceptable', json_encode($value)));
+        }
+        foreach ($unacceptable as $value) {
+            self::assertFalse(BaggageKeys::isAcceptableValue($value), sprintf('%s must be unacceptable', json_encode($value)));
+        }
+        // 构造与派生上下文时按同一口径丢弃，幂等键例外
+        foreach (BaggageKeys::registered() as $key) {
+            foreach ($acceptable as $value) {
+                self::assertSame($value, Context::create(baggage: [$key => $value])->baggageValue($key), $key);
+                self::assertSame($value, Context::create()->withBaggage($key, $value)->baggageValue($key), $key);
+            }
+            foreach ($unacceptable as $value) {
+                $kept = $key === BaggageKeys::IDEMPOTENCY_KEY ? $value : null;
+                self::assertSame($kept, Context::create(baggage: [$key => $value])->baggageValue($key), $key);
+                self::assertSame($kept, Context::create()->withBaggage($key, $value)->baggageValue($key), $key);
+            }
+        }
     }
 
     public function testLifecycleTransitionsFollowTheVectors(): void

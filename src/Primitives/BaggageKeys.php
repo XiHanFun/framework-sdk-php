@@ -77,13 +77,31 @@ final class BaggageKeys
     }
 
     /**
-     * 判断值是否可以随已登记的键进入调用上下文：非空、不超过 MAX_VALUE_LENGTH 个字符、不含控制字符。
+     * 判断值是否可以随已登记的键进入调用上下文（conventions/baggage-keys.md，ADR-0204、ADR-0233）。
      *
-     * 这些值会写进日志、审计与消息信封，换行能伪造日志行（ADR-0204）；不合的成员由建调用上下文的宿主丢弃，
-     * 幂等键例外，交给 Idempotency 阶段以校验错误拒绝。长度按 Unicode 码点计，不是合法 UTF-8 的值不可接受。
+     * 非空、按 UTF-16 码元计不超过 MAX_VALUE_LENGTH（与 .NET、JavaScript、Java 的字符串长度相同，基本多文种平面
+     * 以外的字符算两个）、不含 U+0000–U+001F 与 U+007F–U+009F。这些值会写进日志、审计与消息信封，换行能伪造日志行。
+     * 不合的成员在建或派生调用上下文时丢弃，xihan.idempotency-key 例外。PHP 字符串是字节：不是合法 UTF-8 的值不可接受。
      */
     public static function isAcceptableValue(string $value): bool
     {
-        return preg_match('/^[^\p{Cc}]{1,' . self::MAX_VALUE_LENGTH . '}$/uD', $value) === 1;
+        // 每个 UTF-16 码元在 UTF-8 里至多占 3 个字节，超过 3 × 上限的字节数一定超长，先挡掉再做逐字的核对
+        if ($value === '' || strlen($value) > self::MAX_VALUE_LENGTH * 3 || preg_match('//u', $value) !== 1) {
+            return false;
+        }
+        if (preg_match('/[\x{0}-\x{1F}\x{7F}-\x{9F}]/u', $value) === 1) {
+            return false;
+        }
+        $units = (int) preg_match_all('/./su', $value) + (int) preg_match_all('/[\x{10000}-\x{10FFFF}]/u', $value);
+
+        return $units <= self::MAX_VALUE_LENGTH;
+    }
+
+    /**
+     * 判断一个成员能否进入调用上下文：未登记的键与幂等键不按值丢弃，其余已登记的键要求值可接受。
+     */
+    public static function admits(string $key, string $value): bool
+    {
+        return !self::isRegistered($key) || $key === self::IDEMPOTENCY_KEY || self::isAcceptableValue($value);
     }
 }

@@ -57,7 +57,8 @@ final class Context
      * @param string|null $traceParent W3C traceparent；来自载体的文本先用 TraceParent::tryParse 判断
      * @param string|null $traceId 追踪 ID；没有时生成
      * @param string|null $spanId Span ID；没有时生成
-     * @param array<string, string> $baggage Baggage；键必须符合 `xihan.<name>`
+     * @param array<string, string> $baggage Baggage；键必须符合 `xihan.<name>`。已登记键的值不合约束
+     *                                      （BaggageKeys::isAcceptableValue）的成员丢弃，xihan.idempotency-key 除外
      * @param Clock|null $clock 判定截止时间的时钟；null 即系统时钟
      *
      * @throws InvalidArgumentException 选项冲突、超时不合法、追踪不合法或 Baggage 键不合法（PRIMITIVES_VALIDATION_001）
@@ -218,13 +219,20 @@ final class Context
     /**
      * 派生一个多一个 Baggage 键值的上下文；同名的键被替换。
      *
+     * 已登记键的值不合约束时这个成员被丢弃（conventions/baggage-keys.md）：派生出的上下文里没有这个键，
+     * 原来的值也不留下——调用方要换掉它，留下旧值会让上下文带着调用方想撤下的租户或主体。幂等键例外。
+     *
      * @throws InvalidArgumentException 键不符合 `xihan.<name>`（PRIMITIVES_VALIDATION_001）
      */
     public function withBaggage(string $key, string $value): self
     {
         self::checkKey($key);
         $baggage = $this->baggage;
-        $baggage[$key] = $value;
+        if (BaggageKeys::admits($key, $value)) {
+            $baggage[$key] = $value;
+        } else {
+            unset($baggage[$key]);
+        }
 
         return $this->derive($baggage);
     }
@@ -315,7 +323,7 @@ final class Context
     }
 
     /**
-     * 核对 Baggage：键符合 `xihan.<name>`、值是字符串；调用方不一定经过静态检查，运行期也核对。
+     * 核对 Baggage：键符合 `xihan.<name>`、值是字符串（调用方不一定经过静态检查，运行期也核对），并丢弃值不合约束的已登记成员。
      *
      * @param array<array-key, mixed> $baggage
      *
@@ -330,7 +338,10 @@ final class Context
             if (!is_string($value)) {
                 throw new InvalidArgumentException(sprintf("The baggage value of '%s' must be a string.", $key));
             }
-            $checked[$key] = $value;
+            // 丢弃发生在构造上下文的入口：上下文只携带已经通过的值，之后不再逐次过滤
+            if (BaggageKeys::admits($key, $value)) {
+                $checked[$key] = $value;
+            }
         }
 
         return $checked;

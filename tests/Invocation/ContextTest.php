@@ -19,6 +19,28 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
  */
 final class ContextTest extends TestCase
 {
+    public function testUnacceptableRegisteredValuesAreDropped(): void
+    {
+        $context = Context::create(baggage: [
+            BaggageKeys::TENANT => '',
+            BaggageKeys::PRINCIPAL => "p1\nforged",
+            BaggageKeys::CORRELATION => 'c1',
+            BaggageKeys::IDEMPOTENCY_KEY => "k\n1",
+            'xihan.feature-flag' => "on\noff",
+        ]);
+        self::assertNull($context->tenant());
+        self::assertNull($context->principal());
+        self::assertSame('c1', $context->correlation());
+        self::assertSame("k\n1", $context->idempotencyKey(), 'the idempotency key is left to the idempotency stage');
+        self::assertSame("on\noff", $context->baggageValue('xihan.feature-flag'), 'unregistered keys never leave the process');
+
+        // 派生时同一口径：不合的值丢弃，同名的旧值也不留下
+        $withTenant = $context->withBaggage(BaggageKeys::TENANT, 't1');
+        self::assertSame('t1', $withTenant->tenant());
+        self::assertNull($withTenant->withBaggage(BaggageKeys::TENANT, str_repeat('t', 257))->tenant());
+        self::assertSame('t1', $withTenant->tenant(), 'the source context is unchanged');
+    }
+
     public function testCreateGeneratesTraceAndKeepsBaggage(): void
     {
         $context = Context::create(baggage: [BaggageKeys::TENANT => 't1']);

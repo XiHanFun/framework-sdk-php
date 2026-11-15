@@ -71,6 +71,12 @@ final class EnumsTest extends TestCase
         self::assertFalse(BaggageKeys::isAcceptableValue("c1\x7f"));
         self::assertFalse(BaggageKeys::isAcceptableValue("c1\u{85}"));
         self::assertFalse(BaggageKeys::isAcceptableValue("\xff"), 'invalid UTF-8 is not acceptable');
+        // 按 UTF-16 码元计长：基本多文种平面以外的字符算两个
+        self::assertTrue(BaggageKeys::isAcceptableValue(str_repeat('😀', 128)));
+        self::assertFalse(BaggageKeys::isAcceptableValue(str_repeat('😀', 128) . 'a'));
+        self::assertTrue(BaggageKeys::isAcceptableValue(str_repeat('租', 255) . 'a'));
+        self::assertFalse(BaggageKeys::isAcceptableValue("c1\u{9f}"));
+        self::assertTrue(BaggageKeys::isAcceptableValue("c1\u{a0}"), 'U+00A0 is not a control character');
     }
 
     /**
