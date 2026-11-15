@@ -118,15 +118,14 @@ final readonly class Codec
         if ($json === 'null') {
             return Result::fail(OperationErrors::invalidPayload($id, 'the payload is null'));
         }
+        // 原因只写出错位置的 JSON 路径（RFC-0011 规则 2）：PHP 的 JSON 解析不报位置，语法错误与根不是对象都记在 $
         try {
             $decoded = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException $exception) {
-            return Result::fail(
-                OperationErrors::invalidPayload($id, 'the payload is not valid JSON: ' . $exception->getMessage()),
-            );
+        } catch (\JsonException) {
+            return Result::fail(OperationErrors::invalidPayload($id, '$'));
         }
         if (!$decoded instanceof \stdClass) {
-            return Result::fail(OperationErrors::invalidPayload($id, '$: the payload must be a JSON object'));
+            return Result::fail(OperationErrors::invalidPayload($id, '$'));
         }
         // 先按对象解码区分 {} 与 []，确认是对象后再解成关联数组交给解码函数
         /** @var array<string, mixed> $object */

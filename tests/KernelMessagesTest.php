@@ -6,6 +6,11 @@ namespace XiHan\Framework\Tests;
 
 use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Invocation\CancellationReason;
+use XiHan\Framework\Invocation\Context;
+use XiHan\Framework\Operation\Contract;
+use XiHan\Framework\Operation\Invoker;
+use XiHan\Framework\Operation\Registry;
+use XiHan\Framework\Operation\Request;
 use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\KernelMessages;
@@ -13,6 +18,7 @@ use XiHan\Framework\Primitives\LocaleName;
 use XiHan\Framework\Primitives\MessageCatalog;
 use XiHan\Framework\Primitives\MessageScope;
 use XiHan\Framework\Primitives\MessageTemplate;
+use XiHan\Framework\Primitives\Result;
 
 /**
  * 回放 spec/conformance/vectors/primitives/kernel-messages.json：码、键、参数与 en-US 模板逐字一致，
@@ -86,10 +92,55 @@ final class KernelMessagesTest extends TestCase
      */
     private static function producers(): array
     {
+        $registry = new Registry();
+        $handler = static fn (Context $context, array $request): Result => Result::ok($request);
+        $registry->add(new Contract('orders.create'), $handler, owner: 'xihan.sales.orders');
+        $invoker = new Invoker($registry);
+
         return [
             KernelMessages::DEADLINE_EXCEEDED => static fn (): Error => CancellationReason::DeadlineExceeded->toError(),
             KernelMessages::CANCELLED => static fn (): Error => CancellationReason::Cancelled->toError(),
+            KernelMessages::OPERATION_UNKNOWN => static fn (): Error => self::failure(
+                $invoker->invoke(Context::create(), new Request('orders.missing'))->outcome,
+            ),
+            KernelMessages::OPERATION_INVALID_PAYLOAD => static fn (): Error => self::failure(
+                $invoker->invoke(Context::create(), new Request('orders.create', '[1]'))->outcome,
+            ),
+            KernelMessages::OPERATION_TYPE_MISMATCH => static fn (): Error => self::failure(
+                $invoker->invokeTyped(Context::create(), 'orders.create', 'not an array', 'mixed'),
+            ),
+            KernelMessages::OPERATION_DUPLICATE => static function () use ($registry, $handler): Error {
+                try {
+                    $registry->add(new Contract('orders.create'), $handler);
+                } catch (ConfigurationException $exception) {
+                    return $exception->toError();
+                }
+                self::fail('a duplicate must be rejected');
+            },
+            KernelMessages::OPERATION_REGISTRY_FULL => static function () use ($handler): Error {
+                $full = new Registry();
+                for ($index = 0; $index < Registry::CAPACITY; $index++) {
+                    $full->add(new Contract('items.op' . $index), $handler);
+                }
+                try {
+                    $full->add(new Contract('items.overflow'), $handler);
+                } catch (ConfigurationException $exception) {
+                    return $exception->toError();
+                }
+                self::fail('a full registry must reject');
+            },
         ];
+    }
+
+    /**
+     * @param Result<mixed> $result
+     */
+    private static function failure(Result $result): Error
+    {
+        $error = $result->error();
+        self::assertNotNull($error);
+
+        return $error;
     }
 
     /**

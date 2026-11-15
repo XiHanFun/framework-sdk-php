@@ -60,12 +60,24 @@ final class InvokerTest extends TestCase
         self::assertSame(OperationErrors::NOT_FOUND, $missing->code);
         self::assertSame(['id' => 'orders.missing'], $missing->details);
 
-        foreach (['null', '[1]', '{', '"x"', '{"quantity":"two"}'] as $payload) {
-            $invalid = $invoker->invoke(Context::create(), new Request('orders.create', $payload))->outcome->error();
-            self::assertNotNull($invalid, $payload);
-            self::assertSame(OperationErrors::INVALID_PAYLOAD, $invalid->code, $payload);
-            self::assertSame(OperationErrors::MESSAGE_INVALID_PAYLOAD, $invalid->messageKey);
+        $reasons = [
+            'null' => 'the payload is null',
+            '[1]' => '$',
+            '{' => '$',
+            '"x"' => '$',
+            '{"quantity":"two"}' => '$.quantity',
+        ];
+        foreach ($reasons as $payload => $reason) {
+            $invalid = $invoker->invoke(Context::create(), new Request('orders.create', (string) $payload))->outcome->error();
+            self::assertNotNull($invalid, (string) $payload);
+            self::assertSame(OperationErrors::INVALID_PAYLOAD, $invalid->code, (string) $payload);
+            self::assertSame('kernel.operation.invalid_payload', $invalid->messageKey);
+            self::assertSame(['id' => 'orders.create', 'reason' => $reason], $invalid->details, (string) $payload);
         }
+        self::assertSame("The payload of operation 'orders.create' is not valid: $.quantity", $invoker->invoke(
+            Context::create(),
+            new Request('orders.create', '{"quantity":"two"}'),
+        )->outcome->error()?->message());
         $empty = $invoker->invoke(Context::create(), new Request('orders.create'));
         self::assertSame('ORDERS_VALIDATION_001', $empty->outcome->error()?->code, 'an empty payload is {}');
         $blank = $invoker->invoke(Context::create(), new Request('orders.create', " \n"));
@@ -110,7 +122,8 @@ final class InvokerTest extends TestCase
             self::fail('a duplicate must be rejected');
         } catch (ConfigurationException $exception) {
             self::assertSame(OperationErrors::DUPLICATE, $exception->errorCode());
-            self::assertSame("The operation 'orders.create' is already registered.", $exception->getMessage());
+            self::assertSame("Operation 'orders.create' is already registered by 'app'.", $exception->getMessage());
+            self::assertSame(['id' => 'orders.create', 'owner' => 'app'], $exception->toError()->details);
         }
         self::assertCount(1, $registry);
         self::assertSame(PipelineBuilder::APP_OWNER, $registry->list()[0]->owner);
@@ -132,7 +145,8 @@ final class InvokerTest extends TestCase
             self::fail('a full registry must reject');
         } catch (ConfigurationException $exception) {
             self::assertSame(OperationErrors::REGISTRY_FULL, $exception->errorCode());
-            self::assertSame('The operation registry is full (10000 operations).', $exception->getMessage());
+            self::assertSame('The operation registry has reached its capacity of 10000.', $exception->getMessage());
+            self::assertSame(OperationErrors::MESSAGE_REGISTRY_FULL, $exception->toError()->messageKey);
         }
         try {
             $registry->add(new Contract('items.op0'), $handler);

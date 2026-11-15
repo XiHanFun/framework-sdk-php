@@ -52,18 +52,13 @@ final class Registry implements \Countable
                 PipelineBuilder::APP_OWNER,
             ));
         }
-        if (isset($this->descriptors[$contract->id])) {
-            throw new ConfigurationException(
-                sprintf("The operation '%s' is already registered.", $contract->id),
-                OperationErrors::DUPLICATE,
-            );
+        $existing = $this->descriptors[$contract->id] ?? null;
+        if ($existing !== null) {
+            throw ConfigurationException::fromError(OperationErrors::duplicate($contract->id, $existing->owner));
         }
         // 容量在登记时核对：登记表不随插件握手或配置无界增长，满了就是配置错误
         if (count($this->descriptors) >= self::CAPACITY) {
-            throw new ConfigurationException(
-                sprintf('The operation registry is full (%d operations).', self::CAPACITY),
-                OperationErrors::REGISTRY_FULL,
-            );
+            throw ConfigurationException::fromError(OperationErrors::registryFull(self::CAPACITY));
         }
         // 描述按擦除后的类型保存；请求与响应的类型由 Codec 的类型名在类型化调用时核对
         /** @var Codec<mixed, mixed> $erased */

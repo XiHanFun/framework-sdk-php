@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace XiHan\Framework\Operation;
 
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\KernelMessages;
 
 /**
- * 内核登记的操作错误码与消息键（RFC-0011「错误码」），以及调用期失败的工厂。
+ * 操作相关的内核错误（RFC-0011「错误码」，ADR-0233）：码、消息键、参数与 SDK 与宿主共用的表一致，
+ * 见 spec/conformance/vectors/primitives/kernel-messages.json。
  */
 final class OperationErrors
 {
@@ -26,17 +28,23 @@ final class OperationErrors
     /** 操作登记表已满（配置期）。 */
     public const string REGISTRY_FULL = 'KERNEL_OPERATION_002';
 
-    /** 响应编码失败等调用期的意外失败。 */
+    /** 调用期的意外失败：响应编码失败等。 */
     public const string UNEXPECTED = 'KERNEL_UNEXPECTED_001';
 
     /** 操作未登记的消息键，参数 id。 */
-    public const string MESSAGE_NOT_FOUND = 'kernel.operation.unknown';
+    public const string MESSAGE_NOT_FOUND = KernelMessages::OPERATION_UNKNOWN;
 
     /** 载荷不合法的消息键，参数 id、reason。 */
-    public const string MESSAGE_INVALID_PAYLOAD = 'kernel.operation.payload_invalid';
+    public const string MESSAGE_INVALID_PAYLOAD = KernelMessages::OPERATION_INVALID_PAYLOAD;
 
     /** 类型不符的消息键，参数 id、expected、actual。 */
-    public const string MESSAGE_TYPE_MISMATCH = 'kernel.operation.type_mismatch';
+    public const string MESSAGE_TYPE_MISMATCH = KernelMessages::OPERATION_TYPE_MISMATCH;
+
+    /** 重复登记的消息键，参数 id、owner。 */
+    public const string MESSAGE_DUPLICATE = KernelMessages::OPERATION_DUPLICATE;
+
+    /** 登记表已满的消息键，参数 capacity。 */
+    public const string MESSAGE_REGISTRY_FULL = KernelMessages::OPERATION_REGISTRY_FULL;
 
     private function __construct()
     {
@@ -51,7 +59,10 @@ final class OperationErrors
     }
 
     /**
-     * 载荷不合法：KERNEL_VALIDATION_001；原因只写 JSON 路径与问题，不带类型名（ADR-0124）。
+     * 载荷不合法：KERNEL_VALIDATION_001。
+     *
+     * `$reason` 只写出错位置的 JSON 路径，如 `$`、`$.quantity`，不带类型名（RFC-0011 规则 2，ADR-0124）；
+     * 载荷是 JSON 的 null 时写 `the payload is null`。
      */
     public static function invalidPayload(string $id, string $reason): Error
     {
@@ -63,7 +74,7 @@ final class OperationErrors
     }
 
     /**
-     * 类型化调用的类型与登记不符：KERNEL_VALIDATION_002。
+     * 类型化调用的类型与登记不符：KERNEL_VALIDATION_002；expected / actual 是 PHP 的类型名，只给人看。
      */
     public static function typeMismatch(string $id, string $expected, string $actual): Error
     {
@@ -72,5 +83,21 @@ final class OperationErrors
             self::MESSAGE_TYPE_MISMATCH,
             ['id' => $id, 'expected' => $expected, 'actual' => $actual],
         );
+    }
+
+    /**
+     * 操作 ID 重复登记：KERNEL_OPERATION_001；owner 是已经登记了它的归属。
+     */
+    public static function duplicate(string $id, string $owner): Error
+    {
+        return Error::of(self::DUPLICATE, self::MESSAGE_DUPLICATE, ['id' => $id, 'owner' => $owner]);
+    }
+
+    /**
+     * 操作登记表已满：KERNEL_OPERATION_002。
+     */
+    public static function registryFull(int $capacity): Error
+    {
+        return Error::of(self::REGISTRY_FULL, self::MESSAGE_REGISTRY_FULL, ['capacity' => $capacity]);
     }
 }

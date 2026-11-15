@@ -27,7 +27,7 @@ final readonly class CreateOrder
     {
         $quantity = $json['quantity'] ?? 0;
         if (!is_int($quantity)) {
-            return Result::fail(OperationErrors::invalidPayload('orders.create', '$.quantity: must be an integer'));
+            return Result::fail(OperationErrors::invalidPayload('orders.create', '$.quantity'));
         }
 
         return Result::ok(new self($quantity));
