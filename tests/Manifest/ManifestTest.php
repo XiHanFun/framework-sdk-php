@@ -173,6 +173,11 @@ final class ManifestTest extends TestCase
             'bad activation' => '{' . $base . ',"kind":"plugin","isolation":"wasm","activation":["onBoot"]}',
             'bad permission' => '{' . $base . ',"kind":"plugin","isolation":"wasm","permissions":["sudo"]}',
             'bad operation' => '{' . $base . ',"kind":"capability","contributes":{"operations":["Orders.Create"]}}',
+            // 操作 ID 文法比旧 Schema 的形式严：连字符不能在段首尾、不能连写（RFC-0002 解析规则 2）
+            'operation ending with a hyphen' => '{' . $base . ',"kind":"capability","contributes":{"operations":["orders-.list"]}}',
+            'operation with double hyphens' => '{' . $base . ',"kind":"capability","contributes":{"operations":["order--lines.list"]}}',
+            'operation verb with a trailing hyphen' => '{' . $base . ',"kind":"capability","contributes":{"operations":["orders.list-"]}}',
+            'operation with one segment' => '{' . $base . ',"kind":"capability","contributes":{"operations":["orders"]}}',
             'bad section' => '{' . $base . ',"kind":"capability","contributes":{"config":{"section":"Orders"}}}',
             'bad stage' => '{' . $base . ',"kind":"capability","contributes":{"pipeline":[{"middleware":"x","stage":"middle"}]}}',
             'bad binding' => '{' . $base . ',"kind":"capability","bindings":[{"name":"Db","type":"connection:relational"}]}',

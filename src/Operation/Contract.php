@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Operation;
 
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\OperationId;
 use XiHan\Framework\Primitives\Stability;
 
 /**

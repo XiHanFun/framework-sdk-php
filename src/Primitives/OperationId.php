@@ -2,12 +2,13 @@
 
 declare(strict_types=1);
 
-namespace XiHan\Framework\Operation;
+namespace XiHan\Framework\Primitives;
 
 /**
- * 操作 ID 的文法 `<resource>.<verb>`（conventions/operation-ids.md）。
+ * 操作 ID 的文法 `<resource>.<verb>`（conventions/operation-ids.md，RFC-0011）。
  *
- * 资源是小写复数名词、连字符分隔，动词小写，如 `orders.create`、`order-lines.list`。
+ * 资源是小写复数名词、连字符分隔，动词小写，如 `orders.create`、`order-lines.list`。放在原语层（与 .NET 一致），
+ * 操作契约与清单的 `contributes.operations` 共用同一文法（RFC-0002 解析规则 2）。
  */
 final class OperationId
 {

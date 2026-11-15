@@ -6,18 +6,17 @@ namespace XiHan\Framework\Manifest;
 
 use XiHan\Framework\Manifest\Internal\Checks;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\OperationId;
 
 /**
  * 贡献点（RFC-0002 `contributes`）：中间件、操作、配置节、权限码与健康项。
  *
- * 权限码是此包定义的权限（RFC-0008 文法：小写、点分、至少两段，如 orders.read），不重复；
- * 插件的由宿主在登记它的代理操作时一并登记（plugin/invocation.md §1）。
+ * 操作 ID 按操作 ID 文法校验（RFC-0002 解析规则 2，与操作登记表同一文法）；权限码是此包定义的权限
+ * （RFC-0008 文法：小写、点分、至少两段，如 orders.read），不重复；插件的由宿主在登记它的代理操作时一并登记
+ * （plugin/invocation.md §1）。
  */
 final readonly class Contributions implements \JsonSerializable
 {
-    /** 清单里操作 ID 的文法（Schema 的形式校验） */
-    private const string OPERATION_PATTERN = '/^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$/D';
-
     /** 权限码文法（RFC-0008） */
     private const string PERMISSION_CODE_PATTERN = '/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/D';
 
@@ -56,8 +55,9 @@ final readonly class Contributions implements \JsonSerializable
     ) {
         $this->pipeline = Checks::listOf(PipelineContribution::class, $pipeline, 'contributes.pipeline');
         $this->operations = Checks::strings($operations, 'contributes.operations');
+        // 按操作 ID 文法而不是旧 Schema 较松的形式：清单不能声明登记表会拒绝的 ID
         foreach ($this->operations as $operation) {
-            if (preg_match(self::OPERATION_PATTERN, $operation) !== 1) {
+            if (!OperationId::isValid($operation)) {
                 throw new InvalidArgumentException(
                     sprintf("The operation '%s' in 'contributes.operations' must match <resource>.<verb>.", $operation),
                 );
