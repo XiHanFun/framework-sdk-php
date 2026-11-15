@@ -10,9 +10,15 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
  * W3C Trace Context 的 traceparent：`version-traceid-parentid-flags`（RFC-0003「字段」）。
  *
  * trace-id 是 32 位、parent-id（Span ID）是 16 位小写十六进制，都不能全为零；本 SDK 写出的版本是 00。
+ *
+ * trace-flags 原样保留：是否采样只看最低位（W3C 的 sampled），其余位不解释、写出时照旧（RFC-0003 规则 7）。
+ * 没有上游的调用由本 SDK 生成追踪，标志写 01，即按已采样传下去、由下游的采样器决定。
  */
 final readonly class TraceParent implements \Stringable
 {
+    /** 采样位。 */
+    public const int FLAG_SAMPLED = 0x01;
+
     /** traceparent 文法；D 修饰符让 $ 只匹配串尾 */
     private const string PATTERN = '/^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/D';
 
@@ -21,12 +27,15 @@ final readonly class TraceParent implements \Stringable
      *
      * @param string $traceId 32 位小写十六进制
      * @param string $spanId 16 位小写十六进制
-     * @param bool $sampled 采样标志
+     * @param int $flags trace-flags，0–255；缺省为采样（01）
      *
-     * @throws InvalidArgumentException 追踪 ID 或 Span ID 不合法（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 追踪 ID、Span ID 或标志不合法（PRIMITIVES_VALIDATION_001）
      */
-    public function __construct(public string $traceId, public string $spanId, public bool $sampled)
+    public function __construct(public string $traceId, public string $spanId, public int $flags = self::FLAG_SAMPLED)
     {
+        if ($flags < 0 || $flags > 0xFF) {
+            throw new InvalidArgumentException(sprintf('The trace flags must be between 0 and 255, got %d.', $flags));
+        }
         if (!self::isTraceId($traceId)) {
             throw new InvalidArgumentException(sprintf(
                 "The trace ID '%s' must be 32 lowercase hexadecimal digits and not all zeros.",
@@ -53,7 +62,15 @@ final readonly class TraceParent implements \Stringable
             return null;
         }
 
-        return new self($match[2], $match[3], $match[4] === '01');
+        return new self($match[2], $match[3], (int) hexdec($match[4]));
+    }
+
+    /**
+     * 判断是否采样：标志的最低位。
+     */
+    public function isSampled(): bool
+    {
+        return ($this->flags & self::FLAG_SAMPLED) === self::FLAG_SAMPLED;
     }
 
     /**
@@ -89,11 +106,11 @@ final readonly class TraceParent implements \Stringable
     }
 
     /**
-     * 返回 `00-<trace-id>-<span-id>-<01|00>`。
+     * 返回 `00-<trace-id>-<span-id>-<flags>`，标志按两位小写十六进制原样写出。
      */
     public function __toString(): string
     {
-        return '00-' . $this->traceId . '-' . $this->spanId . '-' . ($this->sampled ? '01' : '00');
+        return '00-' . $this->traceId . '-' . $this->spanId . '-' . sprintf('%02x', $this->flags);
     }
 
     private static function randomHex(int $bytes): string

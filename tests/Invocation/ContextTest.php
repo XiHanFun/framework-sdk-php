@@ -67,7 +67,7 @@ final class ContextTest extends TestCase
         self::assertNotNull($parsed);
         self::assertSame($context->traceId(), $parsed->traceId);
         self::assertSame($context->spanId(), $parsed->spanId);
-        self::assertTrue($parsed->sampled);
+        self::assertTrue($parsed->isSampled());
         self::assertSame($context->traceId(), $derived->traceId(), 'derived contexts keep the trace');
 
         $context = Context::create(baggage: [
@@ -210,8 +210,21 @@ final class ContextTest extends TestCase
 
         $explicit = Context::create(traceId: '0af7651916cd43dd8448eb211c80319c', spanId: 'b7ad6b7169203331');
         self::assertSame('00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01', $explicit->traceParent());
+        self::assertSame(1, $explicit->traceFlags());
+        self::assertStringEndsWith('-01', Context::create()->traceParent(), 'a root call writes 01');
         self::assertTrue(TraceParent::isTraceId(TraceParent::newTraceId()));
         self::assertTrue(TraceParent::isSpanId(TraceParent::newSpanId()));
+
+        // 只看最低位判断采样，其余位原样写出
+        $other = Context::create(traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-03');
+        self::assertTrue($other->isSampled());
+        self::assertSame(3, $other->traceFlags());
+        self::assertStringEndsWith('-03', $other->traceParent());
+        $unsampled = Context::create(traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-fe');
+        self::assertFalse($unsampled->isSampled());
+        self::assertStringEndsWith('-fe', $unsampled->traceParent());
+        $this->expectException(InvalidArgumentException::class);
+        new TraceParent('0af7651916cd43dd8448eb211c80319c', 'b7ad6b7169203331', 256);
     }
 
     public function testInvalidOptionsAreProgrammingErrors(): void

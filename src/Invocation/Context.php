@@ -183,11 +183,19 @@ final class Context
     }
 
     /**
-     * 返回采样标志。
+     * 返回是否采样：trace-flags 的最低位。
      */
     public function isSampled(): bool
     {
-        return $this->trace->sampled;
+        return $this->trace->isSampled();
+    }
+
+    /**
+     * 返回 trace-flags（0–255）：来自上游的原样保留，本 SDK 生成或只给了追踪 ID 时为 01。
+     */
+    public function traceFlags(): int
+    {
+        return $this->trace->flags;
     }
 
     /**
@@ -307,8 +315,13 @@ final class Context
 
     private static function traceOf(?string $traceParent, ?string $traceId, ?string $spanId): TraceParent
     {
+        // 没有上游的标志（生成追踪、或只给了追踪 ID）时写 01：按已采样传下去，由下游的采样器决定（RFC-0003 规则 7）
         if ($traceParent === null) {
-            return new TraceParent($traceId ?? TraceParent::newTraceId(), $spanId ?? TraceParent::newSpanId(), true);
+            return new TraceParent(
+                $traceId ?? TraceParent::newTraceId(),
+                $spanId ?? TraceParent::newSpanId(),
+                TraceParent::FLAG_SAMPLED,
+            );
         }
         if ($traceId !== null || $spanId !== null) {
             throw new InvalidArgumentException(
