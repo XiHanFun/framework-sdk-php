@@ -67,7 +67,7 @@ $invoker = new Invoker($registry, (new PipelineBuilder())->useAt($observe, Pipel
 
 $context = Context::create(timeout: 2.0, baggage: [BaggageKeys::CORRELATION => 'c1']);
 $response = $invoker->invoke($context, new Request('orders.create', '{"quantity":2}'));
-echo json_encode($response->outcome), ' ', $response->payload; // {"ok":true,"value":{}} {"id":"o-c1","quantity":2}
+echo json_encode($response->outcome), ' ', $response->payload; // {"ok":true} {"id":"o-c1","quantity":2}
 ```
 
 1. 操作用 `Registry::add` 登记：契约、处理函数、`Codec` 与可选的 `Schema`。PHP 没有不经反射的类型化 JSON 解码，所以 `Codec::typed` 显式给出请求与响应的类型名和解码函数；不需要类型时用缺省的 `Codec::json()`，请求就是 JSON 对象解码成的关联数组。
@@ -87,10 +87,12 @@ echo $manifest->toJson();                                         // 规范化�
 
 echo json_encode(Result::fail(Error::literal('ORDERS_CONFLICT_001', 'stale')));
 // {"ok":false,"error":{"code":"ORDERS_CONFLICT_001","message":"stale"}}
-$result = Result::fromJson('{"ok":true,"value":{"id":"o1"}}');
+$result = Result::fromJson('{"ok":true,"value":{"id":"o1"}}');   // 有值结果；对象按 stdClass 交出
+$done = Result::unitFromJson('{"ok":true}');                       // 无值结果
+$found = Result::maybeFromJson('{"ok":true,"value":null}');        // 值类型为 Maybe 的结果，null 即无值
 ```
 
-`Result<T>`、`Error`、`Maybe<T>` 的 JSON 编码与 .NET 参考实现一致（`{"ok":true,"value":…}` / `{"ok":false,"error":{…}}`），生命周期迁移表、管道阶段顺序、错误码、Baggage 键与能力依赖文本的文法由 `spec/conformance/vectors` 验证。泛型以 PHPStan 的 `@template` 标注。
+`Result<T>`、`Error`、`Maybe<T>` 的 JSON 编码按 RFC-0001「Result」（ADR-0233），与 .NET 参考实现一致：有值成功 `{"ok":true,"value":…}`，无值成功只写 `{"ok":true}`，失败 `{"ok":false,"error":{…}}`。读取时按结果的种类选入口：无值结果带了 `value`（`{}` 与 `null` 也算）、失败带 `value`、成功带 `error`、可选成员写成 `null`、`Error` 缺 `message` 或 `message` 为空都拒绝，未知成员忽略。生命周期迁移表、管道阶段顺序、错误码、Baggage 键与值、能力依赖文本、线上编码与消息模板由 `spec/conformance/vectors` 验证。泛型以 PHPStan 的 `@template` 标注。
 
 ## 开发
 

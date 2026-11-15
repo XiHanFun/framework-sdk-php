@@ -22,7 +22,7 @@ final class Values
     }
 
     /**
-     * 判断值是否 JSON 可表示：null、布尔、整数、有限浮点数、UTF-8 字符串、由它们组成的数组，或 JsonSerializable。
+     * 判断值是否 JSON 可表示：null、布尔、整数、有限浮点数、UTF-8 字符串、由它们组成的数组或 stdClass，或 JsonSerializable。
      */
     public static function isJson(mixed $value): bool
     {
@@ -80,6 +80,10 @@ final class Values
         }
         if (is_string($value)) {
             return preg_match('//u', $value) === 1;
+        }
+        // 线上还原的嵌套对象保持 stdClass，空对象再写出时仍是 {}
+        if ($value instanceof \stdClass) {
+            $value = get_object_vars($value);
         }
         if (!is_array($value)) {
             return false;

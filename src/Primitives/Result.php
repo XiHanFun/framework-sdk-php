@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Primitives;
 
 use XiHan\Framework\Primitives\Internal\Values;
+use XiHan\Framework\Primitives\Internal\Wire;
 
 /**
  * 成功或失败（RFC-0001 Result / Result<T>）。
@@ -12,7 +13,9 @@ use XiHan\Framework\Primitives\Internal\Values;
  * 成功带值，失败带 Error，二者互斥；成功值不能为 null，「成功但没有值」用 `Result::success()`（值为 Unit）
  * 或 `Result<Maybe<T>>`。可恢复失败走 Result，不抛异常。
  *
- * 线上编码：`{"ok":true,"value":…}` 或 `{"ok":false,"error":{…}}`。
+ * 线上编码（RFC-0001「Result」，ADR-0233）：有值成功 `{"ok":true,"value":…}`，无值成功 `{"ok":true}`，
+ * 失败 `{"ok":false,"error":{…}}`。还原时按结果的种类选入口：fromWire（有值）、unitFromWire（无值）、
+ * maybeFromWire（值类型为 Maybe，`"value":null` 即无值）。
  *
  * @template-covariant T
  */
@@ -65,43 +68,83 @@ final readonly class Result implements \JsonSerializable, \Stringable
     }
 
     /**
-     * 从线上编码还原（已用 `json_decode(..., true)` 解码成关联数组）。
+     * 从线上编码还原有值的结果；接受 `json_decode` 的对象（stdClass）或关联数组。
      *
-     * 成功值先按 JSON 解码的形状交给 `$value` 变换成目标类型；不给时原样作为值。
+     * 成功时 value 必填且不能是 null；成功值按 JSON 解码的形状交给 `$value` 变换成目标类型，不给时原样作为值。
+     * 失败时 error 必填、不能带 value；成功不能带 error；未知成员忽略（RFC-0001「Result」）。
      *
      * @template TValue
      *
-     * @param array<array-key, mixed> $wire
      * @param (\Closure(mixed): TValue)|null $value 把解码出的成功值变换成目标类型
      *
      * @return ($value is null ? self<mixed> : self<TValue>)
      *
      * @throws InvalidArgumentException 线上编码不合法（PRIMITIVES_VALIDATION_001）
      */
-    public static function fromArray(array $wire, ?\Closure $value = null): self
+    public static function fromWire(mixed $wire, ?\Closure $value = null): self
     {
-        $ok = $wire['ok'] ?? null;
-        if (!is_bool($ok)) {
-            throw new InvalidArgumentException("The field 'ok' of a result on the wire must be a boolean.");
+        $members = self::parse($wire);
+        if ($members instanceof Error) {
+            return self::fail($members);
         }
-        if (!$ok) {
-            $error = $wire['error'] ?? null;
-            if (!is_array($error)) {
-                throw new InvalidArgumentException('A failed result on the wire needs an error.');
-            }
-
-            return self::fail(Error::fromArray($error));
-        }
-        $decoded = $wire['value'] ?? null;
-        if ($decoded === null) {
-            throw new InvalidArgumentException('A successful result on the wire needs a value.');
+        if (!array_key_exists('value', $members) || $members['value'] === null) {
+            throw new InvalidArgumentException('A successful result on the wire needs a value that is not null.');
         }
 
-        return self::ok($value === null ? $decoded : $value($decoded));
+        return self::ok($value === null ? $members['value'] : $value($members['value']));
     }
 
     /**
-     * 从线上编码的 JSON 文本还原。
+     * 从线上编码还原无值的结果：成功只写 `{"ok":true}`，带了 value（`{}` 与 null 也算）即不合法。
+     *
+     * @return self<Unit>
+     *
+     * @throws InvalidArgumentException 线上编码不合法（PRIMITIVES_VALIDATION_001）
+     */
+    public static function unitFromWire(mixed $wire): self
+    {
+        $members = self::parse($wire);
+        if ($members instanceof Error) {
+            return self::fail($members);
+        }
+        if (array_key_exists('value', $members)) {
+            throw new InvalidArgumentException(
+                'A successful result without a value must not carry a value on the wire.',
+            );
+        }
+
+        return self::success();
+    }
+
+    /**
+     * 从线上编码还原值类型为 Maybe 的结果：成功时 value 必填，null 即无值。
+     *
+     * @template TValue
+     *
+     * @param (\Closure(mixed): TValue)|null $value 把解码出的非 null 值变换成目标类型
+     *
+     * @return ($value is null ? self<Maybe<mixed>> : self<Maybe<TValue>>)
+     *
+     * @throws InvalidArgumentException 线上编码不合法（PRIMITIVES_VALIDATION_001）
+     */
+    public static function maybeFromWire(mixed $wire, ?\Closure $value = null): self
+    {
+        $members = self::parse($wire);
+        if ($members instanceof Error) {
+            return self::fail($members);
+        }
+        if (!array_key_exists('value', $members)) {
+            throw new InvalidArgumentException(
+                'A successful result of a maybe needs a value on the wire, null for none.',
+            );
+        }
+        $decoded = $members['value'];
+
+        return self::ok($decoded === null ? Maybe::none() : Maybe::some($value === null ? $decoded : $value($decoded)));
+    }
+
+    /**
+     * 从线上编码的 JSON 文本还原有值的结果（按对象模式解码，对象是 stdClass）。
      *
      * @template TValue
      *
@@ -109,20 +152,39 @@ final readonly class Result implements \JsonSerializable, \Stringable
      *
      * @return ($value is null ? self<mixed> : self<TValue>)
      *
-     * @throws InvalidArgumentException 不是 JSON 对象，或线上编码不合法（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 不是 JSON，或线上编码不合法（PRIMITIVES_VALIDATION_001）
      */
     public static function fromJson(string $json, ?\Closure $value = null): self
     {
-        try {
-            $wire = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException $exception) {
-            throw new InvalidArgumentException('The result on the wire is not valid JSON.', previous: $exception);
-        }
-        if (!is_array($wire)) {
-            throw new InvalidArgumentException('The result on the wire must be a JSON object.');
-        }
+        return self::fromWire(Wire::decode($json, 'result'), $value);
+    }
 
-        return self::fromArray($wire, $value);
+    /**
+     * 从线上编码的 JSON 文本还原无值的结果。
+     *
+     * @return self<Unit>
+     *
+     * @throws InvalidArgumentException 不是 JSON，或线上编码不合法（PRIMITIVES_VALIDATION_001）
+     */
+    public static function unitFromJson(string $json): self
+    {
+        return self::unitFromWire(Wire::decode($json, 'result'));
+    }
+
+    /**
+     * 从线上编码的 JSON 文本还原值类型为 Maybe 的结果。
+     *
+     * @template TValue
+     *
+     * @param (\Closure(mixed): TValue)|null $value 把解码出的非 null 值变换成目标类型
+     *
+     * @return ($value is null ? self<Maybe<mixed>> : self<Maybe<TValue>>)
+     *
+     * @throws InvalidArgumentException 不是 JSON，或线上编码不合法（PRIMITIVES_VALIDATION_001）
+     */
+    public static function maybeFromJson(string $json, ?\Closure $value = null): self
+    {
+        return self::maybeFromWire(Wire::decode($json, 'result'), $value);
     }
 
     /**
@@ -260,22 +322,59 @@ final readonly class Result implements \JsonSerializable, \Stringable
     }
 
     /**
-     * 返回 `Ok(值)` 或 `Fail(码: 消息)`，便于日志。
+     * 返回 `Ok(值)`、无值成功的 `Ok()` 或 `Fail(码: 消息)`，便于日志。
      */
     public function __toString(): string
     {
-        return $this->error === null ? 'Ok(' . Values::text($this->value) . ')' : 'Fail(' . $this->error . ')';
+        if ($this->error !== null) {
+            return 'Fail(' . $this->error . ')';
+        }
+
+        return $this->value === Unit::Value ? 'Ok()' : 'Ok(' . Values::text($this->value) . ')';
     }
 
     /**
-     * 返回线上编码。
+     * 返回线上编码：有值成功 `{"ok":true,"value":…}`，无值成功只写 `{"ok":true}`，失败 `{"ok":false,"error":{…}}`。
      *
-     * @return array{ok: true, value: mixed}|array{ok: false, error: Error}
+     * @return array{ok: true, value?: mixed}|array{ok: false, error: Error}
      */
     public function jsonSerialize(): array
     {
-        return $this->error === null
-            ? ['ok' => true, 'value' => $this->value]
-            : ['ok' => false, 'error' => $this->error];
+        if ($this->error !== null) {
+            return ['ok' => false, 'error' => $this->error];
+        }
+
+        return $this->value === Unit::Value ? ['ok' => true] : ['ok' => true, 'value' => $this->value];
+    }
+
+    /**
+     * 核对 ok 与 value、error 的搭配：失败时返回还原出的错误，成功时返回成员留给调用方核对 value。
+     *
+     * @return Error|array<array-key, mixed>
+     *
+     * @throws InvalidArgumentException
+     */
+    private static function parse(mixed $wire): Error|array
+    {
+        $members = Wire::members($wire, 'A result on the wire must be a JSON object.');
+        $ok = $members['ok'] ?? null;
+        if (!is_bool($ok)) {
+            throw new InvalidArgumentException("The member 'ok' of a result on the wire must be a boolean.");
+        }
+        if ($ok) {
+            if (array_key_exists('error', $members)) {
+                throw new InvalidArgumentException('A successful result on the wire must not carry an error.');
+            }
+
+            return $members;
+        }
+        if (array_key_exists('value', $members)) {
+            throw new InvalidArgumentException('A failed result on the wire must not carry a value.');
+        }
+        if (($members['error'] ?? null) === null) {
+            throw new InvalidArgumentException('A failed result on the wire needs an error.');
+        }
+
+        return Error::fromWire($members['error']);
     }
 }

@@ -64,7 +64,7 @@ final class ErrorTest extends TestCase
             'bad key' => static fn (): Error => Error::of('A_VALIDATION_001', 'Orders.Missing'),
             'one-segment key' => static fn (): Error => Error::of('A_VALIDATION_001', 'orders'),
             'empty text' => static fn (): Error => Error::literal('A_VALIDATION_001', ''),
-            'non-JSON details' => static fn (): Error => Error::of('A_VALIDATION_001', 'a.b', ['x' => new \stdClass()]),
+            'non-JSON details' => static fn (): Error => Error::of('A_VALIDATION_001', 'a.b', ['x' => new \DateTimeImmutable()]),
             'infinite float' => static fn (): Error => Error::of('A_VALIDATION_001', 'a.b', ['x' => INF]),
             'invalid UTF-8' => static fn (): Error => Error::of('A_VALIDATION_001', 'a.b', ['x' => "\xff"]),
             'with bad code' => static fn (): Error => Error::literal('A_VALIDATION_001', 't')->withCode('x'),

@@ -31,13 +31,19 @@ final class ResultAndMaybeTest extends TestCase
         self::assertTrue($decoded->isFailed());
         self::assertSame('ORDERS_CONFLICT_001', $decoded->error()?->code);
 
+        // 按对象模式解码：对象是 stdClass
         $value = Result::fromJson('{"ok":true,"value":{"id":"o1"}}', static fn (mixed $value): OrderId => new OrderId(
-            is_array($value) && is_string($value['id'] ?? null) ? $value['id'] : '',
+            $value instanceof \stdClass && is_string($value->id ?? null) ? $value->id : '',
         ));
         self::assertTrue($value->valueOrThrow()->equals(new OrderId('o1')));
 
-        self::assertSame('{"ok":true,"value":{}}', json_encode(Result::success(), JSON_THROW_ON_ERROR));
+        self::assertSame('{"ok":true}', json_encode(Result::success(), JSON_THROW_ON_ERROR));
         self::assertSame(Unit::Value, Result::success()->valueOrThrow());
+        self::assertSame(Unit::Value, Result::unitFromJson('{"ok":true}')->valueOrThrow());
+
+        $maybe = Result::maybeFromJson('{"ok":true,"value":"x"}')->valueOrThrow();
+        self::assertSame('x', $maybe->valueOrThrow());
+        self::assertFalse(Result::maybeFromJson('{"ok":true,"value":null}')->valueOrThrow()->hasValue());
     }
 
     public function testInvalidResultWireEncodingsAreRejected(): void

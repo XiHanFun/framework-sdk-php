@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Primitives;
 
 use XiHan\Framework\Primitives\Internal\Values;
+use XiHan\Framework\Primitives\Internal\Wire;
 
 /**
  * 可恢复失败的描述（RFC-0001 Error）。
@@ -166,66 +167,66 @@ final readonly class Error implements \JsonSerializable, \Stringable
     }
 
     /**
-     * 从线上编码还原（已用 `json_decode(..., true)` 解码成关联数组）。
+     * 从线上编码还原；接受 `json_decode` 的对象（stdClass）或关联数组。
      *
-     * 码不合法、消息键不合法或字段类型不对时整体失败；未知字段忽略。
-     *
-     * @param array<array-key, mixed> $wire
+     * 规则（RFC-0001「Result」）：code 必填且合文法，message 必填且是非空字符串；messageKey、details、inner 可选，
+     * 写了就不能是 null——messageKey 合消息键文法，details 是 JSON 对象，inner 是合法的 Error。未知成员忽略。
+     * 还原出的 message 成为已解析的文案。
      *
      * @throws InvalidArgumentException 线上编码不合法（PRIMITIVES_VALIDATION_001）
      */
-    public static function fromArray(array $wire): self
+    public static function fromWire(mixed $wire): self
     {
-        $code = $wire['code'] ?? null;
+        $members = Wire::members($wire, 'An error on the wire must be a JSON object.');
+        $code = $members['code'] ?? null;
         if (!is_string($code) || !ErrorCode::isValid($code)) {
             throw new InvalidArgumentException(sprintf(
-                "The error code '%s' must match <DOMAIN>_<KIND>_<NNN>.",
-                is_string($code) ? $code : get_debug_type($code),
+                "The member 'code' of an error on the wire must match <DOMAIN>_<KIND>_<NNN>, got %s.",
+                is_string($code) ? "'" . $code . "'" : get_debug_type($code),
             ));
         }
-        $message = $wire['message'] ?? null;
-        if ($message !== null && !is_string($message)) {
-            throw new InvalidArgumentException("The field 'message' of an error on the wire must be a string.");
+        $message = $members['message'] ?? null;
+        if (!is_string($message) || $message === '') {
+            throw self::invalidMember('message', 'be a non-empty string');
         }
-        $messageKey = $wire['messageKey'] ?? null;
-        if ($messageKey !== null && (!is_string($messageKey) || !MessageTemplate::isValidKey($messageKey))) {
-            throw new InvalidArgumentException(
-                "The field 'messageKey' of an error on the wire must be a message key <domain>.<segment>[.<segment>].",
-            );
+        $messageKey = null;
+        if (array_key_exists('messageKey', $members)) {
+            $messageKey = $members['messageKey'];
+            if (!is_string($messageKey) || !MessageTemplate::isValidKey($messageKey)) {
+                throw self::invalidMember('messageKey', 'be a message key <domain>.<segment>[.<segment>]');
+            }
         }
-        $details = $wire['details'] ?? [];
-        if (!is_array($details) || !Values::isJson($details)) {
-            throw new InvalidArgumentException("The field 'details' of an error on the wire must be a JSON object.");
+        $details = [];
+        if (array_key_exists('details', $members)) {
+            $wireDetails = $members['details'];
+            if (!Wire::isObject($wireDetails)) {
+                throw self::invalidMember('details', 'be a JSON object');
+            }
+            // 只把最外层转成数组；嵌套的对象保持 stdClass，再写出时空对象仍是 {}
+            $details = $wireDetails instanceof \stdClass ? get_object_vars($wireDetails) : $wireDetails;
+            if (!Values::isJson($details)) {
+                throw self::invalidMember('details', 'only hold JSON values');
+            }
         }
-        $inner = $wire['inner'] ?? null;
-        if ($inner !== null && !is_array($inner)) {
-            throw new InvalidArgumentException("The field 'inner' of an error on the wire must be a JSON object.");
-        }
-        $text = $message === '' ? null : $message;
-        if ($text === null && $messageKey === null) {
-            throw new InvalidArgumentException("An error on the wire needs a 'message' or a 'messageKey'.");
+        $inner = null;
+        if (array_key_exists('inner', $members)) {
+            if (!Wire::isObject($members['inner'])) {
+                throw self::invalidMember('inner', 'be an error object');
+            }
+            $inner = self::fromWire($members['inner']);
         }
 
-        return new self($code, $messageKey, $text, $details, $inner === null ? null : self::fromArray($inner));
+        return new self($code, $messageKey, $message, $details, $inner);
     }
 
     /**
-     * 从线上编码的 JSON 文本还原。
+     * 从线上编码的 JSON 文本还原（按对象模式解码，空对象与空数组不混淆）。
      *
-     * @throws InvalidArgumentException 不是 JSON 对象，或线上编码不合法（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 不是 JSON，或线上编码不合法（PRIMITIVES_VALIDATION_001）
      */
     public static function fromJson(string $json): self
     {
-        try {
-            $wire = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException $exception) {
-            throw new InvalidArgumentException('The error on the wire is not valid JSON.', previous: $exception);
-        }
-        if (!is_array($wire)) {
-            throw new InvalidArgumentException('The error on the wire must be a JSON object.');
-        }
-
-        return self::fromArray($wire);
+        return self::fromWire(Wire::decode($json, 'error'));
     }
 
     /**
@@ -314,6 +315,13 @@ final readonly class Error implements \JsonSerializable, \Stringable
         }
 
         return $wire;
+    }
+
+    private static function invalidMember(string $member, string $requirement): InvalidArgumentException
+    {
+        return new InvalidArgumentException(
+            sprintf("The member '%s' of an error on the wire must %s.", $member, $requirement),
+        );
     }
 
     /**

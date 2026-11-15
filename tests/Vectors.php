@@ -14,11 +14,54 @@ final class Vectors
     }
 
     /**
-     * 读取 `spec/conformance/vectors/primitives/<name>.json`。
+     * 读取 `spec/conformance/vectors/primitives/<name>.json`，按关联数组解码。
      *
      * @return array<array-key, mixed>
      */
     public static function primitives(string $name): array
+    {
+        $data = json_decode(self::text($name), true, 512, JSON_THROW_ON_ERROR);
+        if (!is_array($data)) {
+            throw new \RuntimeException(sprintf("The conformance vector '%s' must be a JSON object.", $name));
+        }
+
+        return $data;
+    }
+
+    /**
+     * 读取 `spec/conformance/vectors/primitives/<name>.json`，按对象解码：空对象与空数组不混淆，线上编码的向量用它。
+     */
+    public static function primitivesAsObject(string $name): \stdClass
+    {
+        $data = json_decode(self::text($name), false, 512, JSON_THROW_ON_ERROR);
+        if (!$data instanceof \stdClass) {
+            throw new \RuntimeException(sprintf("The conformance vector '%s' must be a JSON object.", $name));
+        }
+
+        return $data;
+    }
+
+    /**
+     * 把 JSON 值写成规范文本：对象成员按名字排序，用于按 JSON 值比较（不比较成员顺序与空白）。
+     */
+    public static function canonicalJson(mixed $value): string
+    {
+        return json_encode(self::sorted(json_decode(json_encode($value, JSON_THROW_ON_ERROR), false)), JSON_THROW_ON_ERROR);
+    }
+
+    private static function sorted(mixed $value): mixed
+    {
+        if ($value instanceof \stdClass) {
+            $members = get_object_vars($value);
+            ksort($members, SORT_STRING);
+
+            return (object) array_map(self::sorted(...), $members);
+        }
+
+        return is_array($value) ? array_map(self::sorted(...), $value) : $value;
+    }
+
+    private static function text(string $name): string
     {
         $path = dirname(__DIR__) . '/spec/conformance/vectors/primitives/' . $name . '.json';
         $json = is_file($path) ? file_get_contents($path) : false;
@@ -27,12 +70,8 @@ final class Vectors
                 sprintf("The conformance vector '%s' is missing; run 'git submodule update --init'.", $path),
             );
         }
-        $data = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-        if (!is_array($data)) {
-            throw new \RuntimeException(sprintf("The conformance vector '%s' must be a JSON object.", $path));
-        }
 
-        return $data;
+        return $json;
     }
 
     /**
