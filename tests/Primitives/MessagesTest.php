@@ -32,37 +32,43 @@ final class MessagesTest extends TestCase
         }
         self::assertSame('tenant_members', MessageTemplate::domainOf('tenant_members.list.description'));
         self::assertNull(MessageTemplate::domainOf('bad'));
+        self::assertFalse(MessageTemplate::isValidKey('a.' . str_repeat('b', 127)), 'keys are at most 128 characters');
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage("The message key 'bad' must match <domain>.<segment>[.<segment>].");
+        $this->expectExceptionMessage(
+            "The message key 'bad' must match <domain>.<segment>[.<segment>] with at most 128 characters.",
+        );
         MessageTemplate::validateKey('bad');
     }
 
     public function testFormat(): void
     {
-        self::assertSame('a of 007', MessageTemplate::format('{0} of {count:%03d}', ['a', 'count' => 7]));
-        self::assertSame('a of 007', MessageTemplate::format('{0} of {count:%03d}', ['0' => 'a', 'count' => 7]));
+        self::assertSame('a of 007', MessageTemplate::format('{0} of {count:D3}', ['a', 'count' => 7]));
+        self::assertSame('a of 007', MessageTemplate::format('{0} of {count:D3}', ['0' => 'a', 'count' => 7]));
         self::assertSame('x and y', MessageTemplate::format('{0} and {1}', MessageTemplate::positional('x', 'y')));
         self::assertSame('{missing}', MessageTemplate::format('{missing}', []), 'missing placeholders stay');
         self::assertSame('{x} is 1', MessageTemplate::format('{{x}} is {x}', ['x' => 1]), 'doubled braces escape');
-        self::assertSame('{v:%v}', MessageTemplate::format('{v:%v}', ['v' => 1]), 'an unknown format stays visible');
-        self::assertSame('2 N2', MessageTemplate::format('{amount:N2} N2', ['amount' => 2]), 'other formats print');
-        self::assertSame('true false null 1.5', MessageTemplate::format('{a} {b} {c} {d}', [
+        self::assertSame('1', MessageTemplate::format('{v:%v}', ['v' => 1]), 'an unknown format prints plainly');
+        self::assertSame('2.00 N2', MessageTemplate::format('{amount:N2} N2', ['amount' => 2]));
+        self::assertSame('true false  1.5', MessageTemplate::format('{a} {b} {c} {d}', [
             'a' => true, 'b' => false, 'c' => null, 'd' => 1.5,
         ]));
+        self::assertSame('{_x}', MessageTemplate::format('{_x}', ['_x' => 1]), 'names start with a letter');
         self::assertNull(MessageTemplate::tryFormat('{a} {b}', ['a' => 1]));
         self::assertSame('1 2', MessageTemplate::tryFormat('{a} {b}', ['a' => 1, 'b' => 2]));
     }
 
     public function testPlaceholdersAndDescriptions(): void
     {
-        self::assertSame(['id', '0', 'count'], MessageTemplate::placeholdersOf('{id} {0} {count:%d} {id} {{escaped}}'));
+        self::assertSame(['id', '0', 'count'], MessageTemplate::placeholdersOf('{id} {0} {count:D2} {id} {{escaped}} {"a":1}'));
         self::assertSame('kernel.feature.start_failed', MessageTemplate::describe('kernel.feature.start_failed', []));
+        self::assertSame('kernel.feature.start_failed', MessageTemplate::describe('kernel.feature.start_failed', null));
         self::assertSame(
-            'kernel.feature.start_failed (id=x, reason=y)',
+            'kernel.feature.start_failed (reason=y, id=x)',
             MessageTemplate::describe('kernel.feature.start_failed', ['reason' => 'y', 'id' => 'x']),
+            'arguments keep the order they were given in',
         );
-        self::assertSame('a.b (0=x, 1=y, 10=z)', MessageTemplate::describe('a.b', [10 => 'z', 0 => 'x', 1 => 'y']));
-        self::assertSame('a.b (list=[1,2])', MessageTemplate::describe('a.b', ['list' => [1, 2]]));
+        self::assertSame('a.b (10=z, 0=x)', MessageTemplate::describe('a.b', [10 => 'z', 0 => 'x']));
+        self::assertSame('a.b (list=[1,2], none=)', MessageTemplate::describe('a.b', ['list' => [1, 2], 'none' => null]));
     }
 
     public function testCatalogResolvesWithFallbackToEnglish(): void

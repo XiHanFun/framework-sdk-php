@@ -30,7 +30,10 @@ final class Values
     }
 
     /**
-     * 把值写成面向人的文本：字符串原样，标量与 null 按 JSON 字面量，枚举取值或名字，其余按 JSON 或类型名。
+     * 把值写成面向人的文本（RFC-0010「模板」的值的文本形式）。
+     *
+     * 字符串原样，整数十进制，布尔写 true / false，null 写空串，浮点见 Numbers::plain；
+     * 规范不作规定的其余值：枚举取值或名字，Stringable 取文本，数组与 JsonSerializable 按 JSON，其他写类型名。
      */
     public static function text(mixed $value): string
     {
@@ -41,10 +44,13 @@ final class Values
             return $value ? 'true' : 'false';
         }
         if ($value === null) {
-            return 'null';
+            return '';
         }
         if (is_int($value)) {
             return (string) $value;
+        }
+        if (is_float($value)) {
+            return Numbers::plain($value);
         }
         if ($value instanceof \BackedEnum) {
             return (string) $value->value;
@@ -55,7 +61,7 @@ final class Values
         if ($value instanceof \Stringable) {
             return (string) $value;
         }
-        if (is_float($value) || is_array($value) || $value instanceof \JsonSerializable) {
+        if (is_array($value) || $value instanceof \JsonSerializable || $value instanceof \stdClass) {
             try {
                 return json_encode($value, self::JSON_FLAGS);
             } catch (\JsonException) {
