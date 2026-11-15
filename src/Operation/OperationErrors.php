@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Operation;
 
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\FrameworkException;
 use XiHan\Framework\Primitives\KernelMessages;
 
 /**
@@ -83,6 +84,26 @@ final class OperationErrors
             self::MESSAGE_TYPE_MISMATCH,
             ['id' => $id, 'expected' => $expected, 'actual' => $actual],
         );
+    }
+
+    /**
+     * 管道以成功结束却没有响应（中间件以成功短路、处理函数没有执行，又不是幂等回放）：KERNEL_UNEXPECTED_001（RFC-0011 规则 9）。
+     */
+    public static function noResponse(string $id): Error
+    {
+        return Error::unexpected(self::UNEXPECTED, KernelMessages::OPERATION_NO_RESPONSE, ['id' => $id]);
+    }
+
+    /**
+     * 调用期间抛出的异常：KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception（RFC-0011 规则 5）。
+     *
+     * 框架异常的错误作为内部错误带上；其他异常只记类型之外什么都不上线，原始异常要记日志时在 Observe 阶段的中间件里捕获。
+     */
+    public static function unhandledException(\Throwable $exception): Error
+    {
+        $inner = $exception instanceof FrameworkException ? $exception->toError() : null;
+
+        return Error::unexpected(self::UNEXPECTED, KernelMessages::UNHANDLED_EXCEPTION, [], $inner);
     }
 
     /**

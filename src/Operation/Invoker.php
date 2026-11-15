@@ -7,8 +7,6 @@ namespace XiHan\Framework\Operation;
 use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Pipeline\PipelineBuilder;
 use XiHan\Framework\Primitives\ConfigurationException;
-use XiHan\Framework\Primitives\Error;
-use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Unit;
 
@@ -43,6 +41,9 @@ final class Invoker
 
     /**
      * 执行一个 XGI 请求：未登记返回 KERNEL_NOTFOUND_001（不进管道）；否则经完整管道执行。
+     *
+     * 管道以成功结束而没有响应载荷时返回 KERNEL_UNEXPECTED_001 + kernel.operation.no_response（规则 9）；
+     * 管道里抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5）。
      */
     public function invoke(Context $context, Request $request): Response
     {
@@ -56,17 +57,24 @@ final class Invoker
             Current::REQUEST_KEY => $request,
             Current::RESPONSE_KEY => null,
             Current::TERMINAL_KEY => null,
-        ], function () use ($context): Response {
-            $outcome = ($this->step)($context);
+        ], function () use ($context, $request): Response {
+            $outcome = $this->run($context);
+            if ($outcome->isFailed()) {
+                return new Response($outcome, null);
+            }
+            $payload = Current::responsePayload($context);
 
-            return new Response($outcome, $outcome->isOk() ? Current::responsePayload($context) : null);
+            return $payload === null
+                ? new Response(Result::fail(OperationErrors::noResponse($request->id)), null)
+                : new Response($outcome, $payload);
         });
     }
 
     /**
      * 类型化入口：不经 JSON，直接以请求对象经完整管道执行。
      *
-     * 请求不是登记的请求类型、或期望的响应类型与登记不符时返回 KERNEL_VALIDATION_002；未登记返回 KERNEL_NOTFOUND_001。
+     * 请求不是登记的请求类型、或期望的响应类型与登记不符时返回 KERNEL_VALIDATION_002；未登记返回 KERNEL_NOTFOUND_001；
+     * 没有产出响应与抛出的异常同 invoke()。
      *
      * @param string $responseType 期望的响应类型名，与登记的 Codec 一致（Codec::json() 为 mixed）
      *
@@ -97,13 +105,30 @@ final class Invoker
             Current::REQUEST_KEY => new Request($id),
             Current::RESPONSE_KEY => null,
             Current::TERMINAL_KEY => $terminal,
-        ], fn (): Result => ($this->step)($context));
-        if ($outcome->isFailed()) {
-            return Result::fail($outcome->error() ?? self::notExecuted($id));
+        ], fn (): Result => $this->run($context));
+        $error = $outcome->error();
+        if ($error !== null) {
+            return Result::fail($error);
         }
 
-        // 管道成功结束却没有走到 handle（中间件短路成功）时没有响应对象
-        return $result instanceof Result ? $result : Result::fail(self::notExecuted($id));
+        // 管道成功结束却没有走到 handle（中间件以成功短路）时没有响应对象（规则 9）
+        return $result instanceof Result ? $result : Result::fail(OperationErrors::noResponse($id));
+    }
+
+    /**
+     * 执行管道；抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5），不传给调用方。
+     *
+     * @return Result<Unit>
+     */
+    private function run(Context $context): Result
+    {
+        try {
+            return ($this->step)($context);
+        } catch (\Throwable $exception) {
+            // 宿主由 Observe 阶段翻译，SDK 没有内置的 Observe 中间件，在调用器的边界上翻译；要记日志的应用在
+            // Observe 阶段放自己的中间件，异常先经过它再到这里
+            return Result::fail(OperationErrors::unhandledException($exception));
+        }
     }
 
     /**
@@ -164,13 +189,5 @@ final class Invoker
                 }
             }
         }
-    }
-
-    private static function notExecuted(string $id): Error
-    {
-        return Error::literal(
-            ErrorCode::UNINITIALIZED_RESULT,
-            sprintf("The operation '%s' ended successfully without running its handler.", $id),
-        );
     }
 }

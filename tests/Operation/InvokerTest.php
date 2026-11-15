@@ -268,8 +268,24 @@ final class InvokerTest extends TestCase
         self::assertSame('{"replayed":true}', $response->payload);
         self::assertSame(0, $calls);
 
-        $typed = $invoker->invokeTyped(Context::create(), 'orders.get', [], 'mixed');
-        self::assertSame(ErrorCode::UNINITIALIZED_RESULT, $typed->error()?->code);
+        // 类型化调用回放不了记录的载荷：没有响应对象，按规则 9 报 no_response
+        $typed = $invoker->invokeTyped(Context::create(), 'orders.get', [], 'mixed')->error();
+        self::assertNotNull($typed);
+        self::assertSame(OperationErrors::UNEXPECTED, $typed->code);
+        self::assertSame('kernel.operation.no_response', $typed->messageKey);
+        self::assertSame(['id' => 'orders.get'], $typed->details);
+
+        // 中间件以成功短路、也没有交出响应：两种入口都报 no_response，不返回成功的空载荷
+        $silent = (new PipelineBuilder())->useAt(
+            new ClosureMiddleware('Silent', static fn (Context $context, \Closure $next): Result => Result::success()),
+            PipelineStage::Authorize,
+        );
+        $invoker = new Invoker($registry, $silent);
+        $response = $invoker->invoke(Context::create(), new Request('orders.get'));
+        self::assertSame('kernel.operation.no_response', $response->outcome->error()?->messageKey);
+        self::assertNull($response->payload);
+        self::assertSame("Operation 'orders.get' completed without producing a response.", $response->outcome->error()->message());
+        self::assertSame('kernel.operation.no_response', $invoker->invokeTyped(Context::create(), 'orders.get', [], 'mixed')->error()?->messageKey);
 
         $denied = (new PipelineBuilder())->useAt(
             new ClosureMiddleware('Deny', static fn (Context $context, \Closure $next): Result => Result::fail(
@@ -280,6 +296,50 @@ final class InvokerTest extends TestCase
         $invoker = new Invoker($registry, $denied);
         self::assertSame('ORDERS_DENIED_001', $invoker->invokeTyped(Context::create(), 'orders.get', [], 'mixed')->error()?->code);
         self::assertSame('ORDERS_DENIED_001', $invoker->invoke(Context::create(), new Request('orders.get'))->outcome->error()?->code);
+    }
+
+    public function testThrownExceptionsBecomeUnexpectedErrors(): void
+    {
+        $registry = new Registry();
+        $registry->add(new Contract('orders.crash'), static fn (Context $context, array $request): Result => throw new \RuntimeException('boom'));
+        $registry->add(new Contract('orders.misconfigured'), static fn (Context $context, array $request): Result => throw new ConfigurationException(
+            'The orders feature is not configured.',
+            'ORDERS_UNEXPECTED_001',
+        ));
+        // 故意登记不返回 Result 的处理函数，核对运行期的类型边界
+        // @phpstan-ignore argument.type
+        $registry->add(new Contract('orders.untyped'), static fn (Context $context, array $request): mixed => 'not a result');
+        $seen = [];
+        $observe = (new PipelineBuilder())->useAt(
+            new ClosureMiddleware('Observe', static function (Context $context, \Closure $next) use (&$seen): Result {
+                try {
+                    return $next($context);
+                } catch (\Throwable $exception) {
+                    // 应用要记日志时在 Observe 阶段接住原始异常，再交给调用器翻译
+                    $seen[] = $exception::class;
+
+                    throw $exception;
+                }
+            }),
+            PipelineStage::Observe,
+        );
+        $invoker = new Invoker($registry, $observe);
+        $context = Context::create();
+
+        $crash = $invoker->invoke($context, new Request('orders.crash'))->outcome->error();
+        self::assertNotNull($crash);
+        self::assertSame(OperationErrors::UNEXPECTED, $crash->code);
+        self::assertSame('kernel.invocation.unhandled_exception', $crash->messageKey);
+        self::assertSame('An unhandled exception occurred during the invocation.', $crash->message());
+        self::assertNull($crash->inner, 'only framework exceptions are carried as the inner error');
+
+        $misconfigured = $invoker->invokeTyped($context, 'orders.misconfigured', [], 'mixed')->error();
+        self::assertSame('ORDERS_UNEXPECTED_001', $misconfigured?->inner?->code);
+
+        $untyped = $invoker->invoke($context, new Request('orders.untyped'))->outcome->error();
+        self::assertSame(OperationErrors::UNEXPECTED, $untyped?->code, 'a handler that does not return a result is a defect');
+        self::assertSame([\RuntimeException::class, ConfigurationException::class, \TypeError::class], $seen);
+        self::assertNull(Current::descriptor($context), 'the item bag is restored after a thrown exception');
     }
 
     public function testCodecTypesMustExist(): void

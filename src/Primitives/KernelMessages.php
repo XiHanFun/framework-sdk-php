@@ -24,6 +24,13 @@ final class KernelMessages
     /** 截止时间之前调用方取消（KERNEL_CANCELLED_001）；参数无。 */
     public const string CANCELLED = 'kernel.invocation.cancelled';
 
+    /**
+     * 调用期间抛出了异常（KERNEL_UNEXPECTED_001）；参数无。
+     *
+     * RFC-0011 规则 5 要求翻译异常，但共用表与向量还没有这一行：键与模板取自 .NET 的 Localization/en-US.json。
+     */
+    public const string UNHANDLED_EXCEPTION = 'kernel.invocation.unhandled_exception';
+
     /** 操作未登记（KERNEL_NOTFOUND_001）；参数 id。 */
     public const string OPERATION_UNKNOWN = 'kernel.operation.unknown';
 
@@ -48,6 +55,7 @@ final class KernelMessages
         self::DEADLINE_EXCEEDED => 'The invocation exceeded its deadline.',
         self::DEADLINE_BEFORE_START => 'The invocation exceeded its deadline before it started.',
         self::CANCELLED => 'The invocation was canceled.',
+        self::UNHANDLED_EXCEPTION => 'An unhandled exception occurred during the invocation.',
         self::OPERATION_UNKNOWN => "Operation '{id}' is not registered.",
         self::OPERATION_INVALID_PAYLOAD => "The payload of operation '{id}' is not valid: {reason}",
         self::OPERATION_TYPE_MISMATCH => "Operation '{id}' handles '{expected}', but '{actual}' was supplied.",

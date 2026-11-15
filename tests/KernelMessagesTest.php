@@ -11,6 +11,9 @@ use XiHan\Framework\Operation\Contract;
 use XiHan\Framework\Operation\Invoker;
 use XiHan\Framework\Operation\Registry;
 use XiHan\Framework\Operation\Request;
+use XiHan\Framework\Pipeline\ClosureMiddleware;
+use XiHan\Framework\Pipeline\PipelineBuilder;
+use XiHan\Framework\Primitives\PipelineStage;
 use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\KernelMessages;
@@ -40,9 +43,14 @@ final class KernelMessagesTest extends TestCase
             self::assertSame($message['template'], KernelMessages::englishTemplate($key), $key);
             self::assertSame($message['arguments'], MessageTemplate::placeholdersOf($message['template']), $key);
         }
+        // RFC-0011 规则 5 要翻译异常，共用表还没有这一行；它的模板取自 .NET，等向量补上后就会在上面逐字核对
+        $notYetShared = [KernelMessages::UNHANDLED_EXCEPTION];
         foreach (array_keys(KernelMessages::englishTemplates()) as $key) {
-            self::assertContains($key, $keys, sprintf('%s is not in the shared table', $key));
+            if (!in_array($key, $notYetShared, true)) {
+                self::assertContains($key, $keys, sprintf('%s is not in the shared table', $key));
+            }
         }
+        self::assertNotContains(KernelMessages::UNHANDLED_EXCEPTION, $keys, 'the shared table now lists it; drop the exception');
     }
 
     public function testTheSdkRaisesTheSharedErrors(): void
@@ -96,6 +104,10 @@ final class KernelMessagesTest extends TestCase
         $handler = static fn (Context $context, array $request): Result => Result::ok($request);
         $registry->add(new Contract('orders.create'), $handler, owner: 'xihan.sales.orders');
         $invoker = new Invoker($registry);
+        $silent = new Invoker($registry, (new PipelineBuilder())->useAt(
+            new ClosureMiddleware('Silent', static fn (Context $context, \Closure $next): Result => Result::success()),
+            PipelineStage::Authorize,
+        ));
 
         return [
             KernelMessages::DEADLINE_EXCEEDED => static fn (): Error => CancellationReason::DeadlineExceeded->toError(),
@@ -108,6 +120,9 @@ final class KernelMessagesTest extends TestCase
             ),
             KernelMessages::OPERATION_TYPE_MISMATCH => static fn (): Error => self::failure(
                 $invoker->invokeTyped(Context::create(), 'orders.create', 'not an array', 'mixed'),
+            ),
+            KernelMessages::OPERATION_NO_RESPONSE => static fn (): Error => self::failure(
+                $silent->invoke(Context::create(), new Request('orders.create'))->outcome,
             ),
             KernelMessages::OPERATION_DUPLICATE => static function () use ($registry, $handler): Error {
                 try {
