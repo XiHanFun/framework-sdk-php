@@ -17,7 +17,11 @@ use XiHan\Framework\Primitives\Unit;
  *
  * 排序：先按阶段；阶段内先按位置（Beginning 在前），再按归属的序数字典序，再按登记顺序，
  * 最后按 before / after 约束做稳定拓扑排序——约束只调整必要的相对位置，其余保持基准次序。
- * 约束按中间件名引用，在 describe / dump / build 时才解析。
+ *
+ * 次序约束的两端都是中间件名（RFC-0004 排序规则 7）：按名字登记的实例名，或只登记一次、没有实例名的中间件名。
+ * 中间件名有多个实例时按它约束有歧义，改用实例名。约束主体（被约束的那一个）在声明时必须已登记；
+ * 目标在 describe / dump / build 时才解析，未登记、有歧义或不在同一阶段报 KERNEL_PIPELINE_003。
+ * 运行期的成组登记与按归属撤回是宿主能力，本 SDK 不提供（RFC-0004「运行期改动」）。
  */
 final class PipelineBuilder
 {
@@ -30,7 +34,7 @@ final class PipelineBuilder
     /** 阶段名未知。 */
     public const string ERROR_CODE_UNKNOWN_STAGE = 'KERNEL_PIPELINE_002';
 
-    /** 中间件重复登记，或顺序约束引用了未登记、跨阶段或有多个实例的中间件。 */
+    /** 中间件重复登记，约束主体声明时未登记，或顺序约束的目标未登记、有歧义或跨阶段。 */
     public const string ERROR_CODE_REGISTRATION = 'KERNEL_PIPELINE_003';
 
     /** @var list<Registration> */
@@ -101,20 +105,26 @@ final class PipelineBuilder
     }
 
     /**
-     * 约束 `$middleware` 在 `$other` 之前；两端都是中间件名。
+     * 约束 `$middleware` 在 `$other` 之前；两端都是实例名或中间件名。
+     *
+     * @throws ConfigurationException `$middleware` 还没有登记（KERNEL_PIPELINE_003）
      */
     public function before(string $middleware, string $other): self
     {
+        $this->requireSubject($middleware);
         $this->constraints[] = [$middleware, $other];
 
         return $this;
     }
 
     /**
-     * 约束 `$middleware` 在 `$other` 之后；两端都是中间件名。
+     * 约束 `$middleware` 在 `$other` 之后；两端都是实例名或中间件名。
+     *
+     * @throws ConfigurationException `$middleware` 还没有登记（KERNEL_PIPELINE_003）
      */
     public function after(string $middleware, string $other): self
     {
+        $this->requireSubject($middleware);
         $this->constraints[] = [$other, $middleware];
 
         return $this;
@@ -207,15 +217,11 @@ final class PipelineBuilder
     private function sorted(): array
     {
         $this->checkDuplicates();
-        $byName = [];
-        foreach ($this->registrations as $registration) {
-            $byName[$registration->descriptor->middleware][] = $registration;
-        }
-        // 约束按中间件名引用：未登记、有多个实例、跨阶段都是登记错误
+        // 约束按名字引用：未登记、有歧义、跨阶段都是登记错误
         $resolved = [];
         foreach ($this->constraints as [$first, $second]) {
-            $before = $this->single($byName, $first);
-            $after = $this->single($byName, $second);
+            $before = $this->resolve($first);
+            $after = $this->resolve($second);
             if ($before->descriptor->stage !== $after->descriptor->stage) {
                 throw self::registrationError(
                     sprintf("The ordering constraint between '%s' and '%s' crosses stages.", $first, $second),
@@ -260,26 +266,60 @@ final class PipelineBuilder
     }
 
     /**
-     * 按中间件名取唯一的登记；没有或有多个实例都是登记错误。
-     *
-     * @param array<string, non-empty-list<Registration>> $byName
+     * 核对约束主体已登记：名字是某个实例名，或某个中间件名。
      */
-    private function single(array $byName, string $name): Registration
+    private function requireSubject(string $name): void
     {
-        $registrations = $byName[$name] ?? [];
-        if ($registrations === []) {
-            throw self::registrationError(
-                sprintf("The ordering constraint references the unregistered middleware '%s'.", $name),
-            );
+        foreach ($this->registrations as $registration) {
+            if ($registration->descriptor->instance === $name || $registration->descriptor->middleware === $name) {
+                return;
+            }
         }
-        if (count($registrations) > 1) {
+        throw self::registrationError(sprintf(
+            "The middleware '%s' must be registered before an ordering constraint on it is declared.",
+            $name,
+        ));
+    }
+
+    /**
+     * 按名字取唯一的登记：实例名，或只登记一次、没有实例名的中间件名；没有或有歧义都是登记错误。
+     */
+    private function resolve(string $name): Registration
+    {
+        $byType = array_values(array_filter(
+            $this->registrations,
+            static fn (Registration $registration): bool => $registration->descriptor->middleware === $name,
+        ));
+        // 中间件名有多个实例时，按它约束不知道指哪一个
+        if (count($byType) > 1) {
             throw self::registrationError(sprintf(
-                "The middleware '%s' has several named instances; ordering constraints by type are ambiguous.",
+                "The middleware '%s' has several instances; ordering constraints by type are ambiguous, "
+                . 'use an instance name.',
                 $name,
             ));
         }
+        $candidates = array_values(array_filter(
+            $this->registrations,
+            static fn (Registration $registration): bool => $registration->descriptor->instance === $name
+                || ($registration->descriptor->middleware === $name && $registration->descriptor->instance === null),
+        ));
+        if (count($candidates) > 1) {
+            throw self::registrationError(
+                sprintf("The name '%s' refers to several middleware; ordering constraints on it are ambiguous.", $name),
+            );
+        }
+        if ($candidates === []) {
+            throw self::registrationError($byType === []
+                ? sprintf("The ordering constraint references the unregistered middleware '%s'.", $name)
+                : sprintf(
+                    "The middleware '%s' is only registered as the named instance '%s'; "
+                    . 'refer to it by its instance name.',
+                    $name,
+                    (string) $byType[0]->descriptor->instance,
+                ));
+        }
 
-        return $registrations[0];
+        return $candidates[0];
     }
 
     /**

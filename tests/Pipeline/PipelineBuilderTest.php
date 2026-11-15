@@ -136,6 +136,57 @@ final class PipelineBuilderTest extends TestCase
         self::assertCode($duplicate, PipelineBuilder::ERROR_CODE_REGISTRATION);
     }
 
+    public function testConstraintsMayNameInstances(): void
+    {
+        $builder = (new PipelineBuilder())
+            ->useNamedInstance('guard-a', Recorder::passThrough('Guard'), PipelineStage::Observe, Placement::End, 'xihan.plugins.a')
+            ->useNamedInstance('guard-b', Recorder::passThrough('Guard'), PipelineStage::Observe, Placement::End, 'xihan.plugins.b')
+            ->useAt(Recorder::passThrough('Other'), PipelineStage::Observe)
+            ->before('guard-b', 'guard-a')
+            ->after('Other', 'guard-a');
+        self::assertSame(
+            "observe      Guard[guard-b]\nobserve      Guard[guard-a]\nobserve      Other\n",
+            $builder->dump(),
+        );
+
+        // 只登记了一个命名实例的中间件名不是合法的约束目标：要写实例名
+        $single = (new PipelineBuilder())
+            ->useNamedInstance('guard-a', Recorder::passThrough('Guard'), PipelineStage::Observe)
+            ->useAt(Recorder::passThrough('Other'), PipelineStage::Observe)
+            ->before('Other', 'Guard');
+        self::assertCode($single, PipelineBuilder::ERROR_CODE_REGISTRATION);
+
+        // 一个名字既是实例名、又是另一个中间件的名字：有歧义
+        $clash = (new PipelineBuilder())
+            ->useNamedInstance('Audit', Recorder::passThrough('Guard'), PipelineStage::Observe)
+            ->useAt(Recorder::passThrough('Audit'), PipelineStage::Observe)
+            ->useAt(Recorder::passThrough('Other'), PipelineStage::Observe)
+            ->before('Other', 'Audit');
+        self::assertCode($clash, PipelineBuilder::ERROR_CODE_REGISTRATION);
+    }
+
+    public function testConstraintSubjectsMustBeRegisteredFirst(): void
+    {
+        foreach (['before', 'after'] as $method) {
+            try {
+                (new PipelineBuilder())->useAt(Recorder::passThrough('B'), PipelineStage::Validate)->{$method}('A', 'B');
+                self::fail(sprintf('%s on an unregistered subject must be rejected when declared', $method));
+            } catch (ConfigurationException $exception) {
+                self::assertSame(PipelineBuilder::ERROR_CODE_REGISTRATION, $exception->errorCode());
+                self::assertSame(
+                    "The middleware 'A' must be registered before an ordering constraint on it is declared.",
+                    $exception->getMessage(),
+                );
+            }
+        }
+        // 目标可以之后再登记：在排序时才解析
+        $builder = (new PipelineBuilder())
+            ->useAt(Recorder::passThrough('A'), PipelineStage::Validate)
+            ->before('A', 'B')
+            ->useAt(Recorder::passThrough('B'), PipelineStage::Validate);
+        self::assertSame(['A', 'B'], self::names($builder));
+    }
+
     public function testShortCircuitSkipsDownstream(): void
     {
         $recorder = new Recorder();
