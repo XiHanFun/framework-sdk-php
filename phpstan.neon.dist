@@ -1,0 +1,6 @@
+# 静态检查：最高级别，源码与测试一起分析
+parameters:
+  level: max
+  paths:
+    - src
+    - tests

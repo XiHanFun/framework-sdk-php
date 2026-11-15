@@ -4,5 +4,14 @@
 .vscode/
 *.swp
 .DS_Store
+
+# Composer：库不提交锁文件
 /vendor/
 composer.lock
+
+# 工具缓存与本地覆盖配置
+/.phpunit.cache/
+.phpunit.result.cache
+/phpunit.xml
+/phpstan.neon
+/phpcs.xml

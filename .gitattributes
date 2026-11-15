@@ -1,1 +1,14 @@
+# 默认使用 LF
 * text=auto eol=lf
+
+# 发布归档（Composer dist）只含运行时代码与许可、说明
+/spec export-ignore
+/tests export-ignore
+/.github export-ignore
+/.editorconfig export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.gitmodules export-ignore
+/phpcs.xml.dist export-ignore
+/phpstan.neon.dist export-ignore
+/phpunit.xml.dist export-ignore

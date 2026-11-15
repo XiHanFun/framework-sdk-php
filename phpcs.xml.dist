@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<!-- 格式检查：PSR-12，范围是源码与测试 -->
+<ruleset name="XiHan Framework SDK for PHP">
+  <description>PSR-12 coding style for the XiHan Framework SDK for PHP.</description>
+
+  <file>src</file>
+  <file>tests</file>
+
+  <arg name="extensions" value="php"/>
+  <arg name="encoding" value="utf-8"/>
+  <arg name="colors"/>
+  <arg value="sp"/>
+
+  <rule ref="PSR12"/>
+</ruleset>
