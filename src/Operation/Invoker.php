@@ -26,8 +26,9 @@ use XiHan\Framework\Primitives\Unit;
  * - Validate 阶段的 ValidationMiddleware：原始调用在这里把载荷解码成请求，失败即以 KERNEL_VALIDATION_001 结束；
  *   类型化调用跳过。
  *
- * 管道的终点在 handle 阶段之后分派当前操作。描述、请求与响应在进入管道前写进上下文的对象袋，调用返回时还原成进入前的值：
- * 同一个上下文上的连续或嵌套调用互不干扰。
+ * 管道的终点在 handle 阶段之后分派当前操作，响应对象写进对象袋（Current::responseObject()）；XGI 入口在管道结束之后才把它
+ * 编码成载荷，中间件看到的是编码之前的结果（规则 10「编码」）。描述、请求与响应在进入管道前写进上下文的对象袋，调用返回时
+ * 还原成进入前的值：同一个上下文上的连续或嵌套调用互不干扰。
  */
 final class Invoker
 {
@@ -42,6 +43,7 @@ final class Invoker
 
     /** Validate 阶段的解码步骤的中间件名。 */
     public const string VALIDATION_MIDDLEWARE = 'ValidationMiddleware';
+
 
     /** @var \Closure(Context): Result<Unit> */
     private readonly \Closure $step;
@@ -87,8 +89,9 @@ final class Invoker
     /**
      * 执行一个 XGI 请求：未登记返回 KERNEL_NOTFOUND_001（不进管道）；否则经完整管道执行。
      *
-     * 截止时间、解码与异常按内置步骤处理（见类说明）；管道以成功结束而没有响应载荷时返回
-     * KERNEL_UNEXPECTED_001 + kernel.operation.no_response（规则 9）。
+     * 截止时间、解码与异常按内置步骤处理（见类说明）。管道以成功结束后编码响应对象，写不出时（浮点是 NaN 或无穷、不支持的值）
+     * 返回 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception、没有载荷；没有响应对象时用中间件交出的载荷
+     * （幂等回放），两样都没有时返回 KERNEL_UNEXPECTED_001 + kernel.operation.no_response（规则 9）。
      *
      * @throws \Throwable 排在 Observe 内置步骤之前的中间件抛出的异常原样抛出
      */
@@ -103,12 +106,22 @@ final class Invoker
             Current::DESCRIPTOR_KEY => $descriptor,
             Current::REQUEST_KEY => $request,
             Current::REQUEST_OBJECT_KEY => null,
+            Current::RESPONSE_OBJECT_KEY => null,
             Current::RESPONSE_KEY => null,
             Current::TERMINAL_KEY => null,
-        ], function () use ($context, $request): Response {
+        ], function () use ($context, $request, $descriptor): Response {
             $outcome = ($this->step)($context);
             if ($outcome->isFailed()) {
                 return new Response($outcome, null);
+            }
+            // 管道结束之后才编码：中间件看到的是编码之前的响应对象
+            if ($context->items()->has(Current::RESPONSE_OBJECT_KEY)) {
+                $encoded = $descriptor->codec->encode($request->id, Current::responseObject($context));
+                $error = $encoded->error();
+
+                return $error === null
+                    ? new Response($outcome, $encoded->valueOrThrow())
+                    : new Response(Result::fail($error), null);
             }
             $payload = Current::responsePayload($context);
 
@@ -150,6 +163,7 @@ final class Invoker
             Current::DESCRIPTOR_KEY => $descriptor,
             Current::REQUEST_KEY => new Request($id),
             Current::REQUEST_OBJECT_KEY => $request,
+            Current::RESPONSE_OBJECT_KEY => null,
             Current::RESPONSE_KEY => null,
             Current::TERMINAL_KEY => $terminal,
         ], fn (): Result => ($this->step)($context));
@@ -221,7 +235,7 @@ final class Invoker
     }
 
     /**
-     * 管道的终点：类型化调用执行它带来的终点，否则以解码后的请求执行当前操作并把响应载荷写回上下文。
+     * 管道的终点：类型化调用执行它带来的终点，否则以解码后的请求执行当前操作并把响应对象写进对象袋，编码留到管道结束之后。
      *
      * @return Result<Unit>
      */
@@ -238,14 +252,22 @@ final class Invoker
             return Result::fail(OperationErrors::notFound($request->id ?? ''));
         }
         // 解码步骤已把请求写进对象袋；它不在时（对象袋被下游改动）按载荷再解码一次
-        $response = $context->items()->has(Current::REQUEST_OBJECT_KEY)
-            ? $descriptor->respond($context, Current::requestObject($context))
-            : $descriptor->execute($context, $request->payload);
-        if ($response->outcome->isOk() && $response->payload !== null) {
-            Current::setResponsePayload($context, $response->payload);
+        if (!$context->items()->has(Current::REQUEST_OBJECT_KEY)) {
+            $decoded = $descriptor->codec->decode($descriptor->contract->id, $request->payload);
+            $error = $decoded->error();
+            if ($error !== null) {
+                return Result::fail($error);
+            }
+            $context->items()->set(Current::REQUEST_OBJECT_KEY, $decoded->valueOrThrow());
         }
+        $result = $descriptor->handle($context, Current::requestObject($context));
+        $error = $result->error();
+        if ($error !== null) {
+            return Result::fail($error);
+        }
+        $context->items()->set(Current::RESPONSE_OBJECT_KEY, $result->valueOrThrow());
 
-        return $response->outcome;
+        return Result::success();
     }
 
     /**

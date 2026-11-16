@@ -23,6 +23,9 @@ final class Current
     /** @internal 对象袋里放解码后的请求对象的键 */
     public const string REQUEST_OBJECT_KEY = self::class . '::requestObject';
 
+    /** @internal 对象袋里放响应对象（编码之前）的键 */
+    public const string RESPONSE_OBJECT_KEY = self::class . '::responseObject';
+
     /** @internal 对象袋里放类型化调用终点的键 */
     public const string TERMINAL_KEY = self::class . '::terminal';
 
@@ -60,7 +63,17 @@ final class Current
     }
 
     /**
-     * 返回 handle 阶段写回的响应载荷（成功时）；还没有时为 null。
+     * 返回处理函数成功时的响应对象（RFC-0011 调用器规则 3 的 FindOperationResponse），编码之前；还没有时为 null。
+     *
+     * XGI 入口在管道结束之后才把它编码成载荷（规则 10「编码」），所以中间件在 handle 之后看到的是它，不是载荷。
+     */
+    public static function responseObject(Context $context): mixed
+    {
+        return $context->items()->get(self::RESPONSE_OBJECT_KEY);
+    }
+
+    /**
+     * 返回中间件交出的响应载荷（幂等回放）；没有时为 null。
      */
     public static function responsePayload(Context $context): ?string
     {
@@ -70,7 +83,7 @@ final class Current
     }
 
     /**
-     * 写回响应载荷：handle 阶段由调用器写入；幂等回放这类不执行处理函数的中间件也用它交出记录的响应。
+     * 交出响应载荷：幂等回放这类不执行处理函数的中间件用它交出记录的响应；有响应对象时以响应对象为准。
      */
     public static function setResponsePayload(Context $context, string $payload): void
     {

@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Operation;
 
-use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\Internal\Json;
 use XiHan\Framework\Primitives\Internal\JsonNode;
 use XiHan\Framework\Primitives\Internal\JsonReader;
-use XiHan\Framework\Primitives\Internal\Json;
 use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonPath;
@@ -154,9 +153,10 @@ final readonly class Codec
     }
 
     /**
-     * 编码响应；编码失败返回 KERNEL_UNEXPECTED_001。
+     * 编码响应（RFC-0011 规则 10「编码」）；写不出时返回 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception，
+     * 编码函数抛出的是框架异常时它的错误放进 inner。
      *
-     * 数字按值模型写出（整数值的浮点带小数点，非有限的浮点写成字符串，RFC-0001「Result」）。
+     * 整数值的浮点带小数点，RawJson 原样放回；非有限的浮点写不出，不写成 null 或字符串。
      *
      * @param TResponse $response
      *
@@ -165,12 +165,9 @@ final readonly class Codec
     public function encode(string $id, mixed $response): Result
     {
         try {
-            return Result::ok(Json::encode(($this->encode)($response)));
-        } catch (\JsonException $exception) {
-            return Result::fail(Error::literal(
-                OperationErrors::UNEXPECTED,
-                "The response of '" . $id . "' could not be encoded: " . $exception->getMessage(),
-            ));
+            return Result::ok(Json::encode(($this->encode)($response), false));
+        } catch (\Throwable $exception) {
+            return Result::fail(OperationErrors::unhandledException($exception));
         }
     }
 

@@ -214,16 +214,47 @@ final class InvokerTest extends TestCase
     {
         $registry = new Registry();
         $registry->add(new Contract('names.get'), static fn (Context $context, array $request): Result => Result::ok(['value' => "\xff"]));
-        $registry->add(new Contract('numbers.get'), static fn (Context $context, array $request): Result => Result::ok([2.0, INF, NAN]));
-        $invoker = new Invoker($registry);
-        $response = $invoker->invoke(Context::create(), new Request('names.get'));
-        $error = $response->outcome->error();
-        self::assertNotNull($error);
-        self::assertSame(OperationErrors::UNEXPECTED, $error->code);
-        self::assertStringStartsWith("The response of 'names.get' could not be encoded: ", $error->message());
-        self::assertNull($response->payload);
-        // 数字按值模型写出：整数值的浮点带小数点，非有限的浮点写成字符串（RFC-0001「Result」）
-        self::assertSame('[2.0,"Infinity","NaN"]', $invoker->invoke(Context::create(), new Request('numbers.get'))->payload);
+        $registry->add(new Contract('numbers.get'), static fn (Context $context, array $request): Result => Result::ok(['ratio' => NAN]));
+        $registry->add(new Contract('floats.get'), static fn (Context $context, array $request): Result => Result::ok([2.0, -0.0, 1e17]));
+        $registry->add(new Contract('broken.get'), static fn (Context $context, CreateOrder $request): Result => Result::ok([]), Codec::typed(
+            CreateOrder::class,
+            CreateOrder::shape(),
+            CreateOrder::create(...),
+            'array',
+            static fn (mixed $response): mixed => throw new ConfigurationException('The encoder is not configured.', 'ORDERS_UNEXPECTED_001'),
+        ));
+        $seen = [];
+        $egress = (new PipelineBuilder())->useAt(new ClosureMiddleware('Egress', static function (Context $context, \Closure $next) use (&$seen): Result {
+            $outcome = $next($context);
+            // 管道结束之后才编码：中间件看到的是响应对象，还没有载荷（RFC-0011 规则 10「编码」）
+            $seen[] = [Current::responseObject($context), Current::responsePayload($context)];
+
+            return $outcome;
+        }), PipelineStage::Egress);
+        $invoker = new Invoker($registry, $egress);
+        // 写不出（非法 UTF-8、NaN 与无穷）：kernel.invocation.unhandled_exception，不抛给调用方，没有载荷
+        foreach (['names.get', 'numbers.get'] as $id) {
+            $response = $invoker->invoke(Context::create(), new Request($id));
+            $error = $response->outcome->error();
+            self::assertNotNull($error, $id);
+            self::assertSame(OperationErrors::UNEXPECTED, $error->code, $id);
+            self::assertSame('kernel.invocation.unhandled_exception', $error->messageKey, $id);
+            self::assertSame([], $error->details, $id);
+            self::assertNull($error->inner, $id);
+            self::assertNull($response->payload, $id);
+        }
+        self::assertCount(2, $seen);
+        self::assertSame([['value' => "\xff"], null], $seen[0]);
+        /** @var array{array{ratio: float}, ?string} $numbers */
+        $numbers = $seen[1];
+        self::assertNan($numbers[0]['ratio']);
+        self::assertNull($numbers[1]);
+        // 编码函数抛出框架异常：它的错误放进 inner
+        $broken = $invoker->invoke(Context::create(), new Request('broken.get'))->outcome->error();
+        self::assertSame('kernel.invocation.unhandled_exception', $broken?->messageKey);
+        self::assertSame('ORDERS_UNEXPECTED_001', $broken->inner?->code);
+        // 整数值的浮点写成浮点
+        self::assertSame('[2.0,-0.0,1.0e+17]', $invoker->invoke(Context::create(), new Request('floats.get'))->payload);
     }
 
     public function testCallsRestoreTheItemsTheyReplace(): void
