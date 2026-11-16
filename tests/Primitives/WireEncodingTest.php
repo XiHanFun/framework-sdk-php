@@ -67,6 +67,40 @@ final class WireEncodingTest extends TestCase
         }
     }
 
+    public function testDuplicateMembersAreRejected(): void
+    {
+        $duplicates = Vectors::primitivesAsObject('wire-encoding')->duplicates ?? null;
+        self::assertIsArray($duplicates);
+        self::assertNotEmpty($duplicates);
+        foreach ($duplicates as $case) {
+            self::assertInstanceOf(\stdClass::class, $case);
+            $name = self::string($case, 'name');
+            $text = self::string($case, 'text');
+            try {
+                if (self::string($case, 'target') === 'error') {
+                    Error::fromJson($text);
+                } else {
+                    self::read(self::string($case, 'kind'), $text);
+                }
+                self::fail(sprintf('%s must be rejected', $name));
+            } catch (InvalidArgumentException $exception) {
+                self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode(), $name);
+            }
+        }
+        // 解码后比较名字；字符串值与嵌套在数组里的同名成员不算重复
+        $this->expectException(InvalidArgumentException::class);
+        Error::fromJson('{"code":"KERNEL_UNEXPECTED_001","message":"x","message":"y"}');
+    }
+
+    public function testRepeatedNamesInDifferentObjectsAreFine(): void
+    {
+        $error = Error::fromJson(
+            '{"code":"A_VALIDATION_001","message":"code","details":{"code":"x","list":[{"code":1},{"code":2}],"s":"\"code\""}}',
+        );
+        self::assertSame('code', $error->message());
+        self::assertSame('x', $error->details['code']);
+    }
+
     public function testTheSdkWritesTheCanonicalForms(): void
     {
         self::assertSame('{"ok":true}', json_encode(Result::success(), JSON_THROW_ON_ERROR));

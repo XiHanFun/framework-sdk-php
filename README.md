@@ -93,7 +93,7 @@ $done = Result::unitFromJson('{"ok":true}');                       // 无值结�
 $found = Result::maybeFromJson('{"ok":true,"value":null}');        // 值类型为 Maybe 的结果，null 即无值
 ```
 
-`Result<T>`、`Error`、`Maybe<T>` 的 JSON 编码按 RFC-0001「Result」（ADR-0233），与 .NET 参考实现一致：有值成功 `{"ok":true,"value":…}`，无值成功只写 `{"ok":true}`，失败 `{"ok":false,"error":{…}}`。读取时按结果的种类选入口：无值结果带了 `value`（`{}` 与 `null` 也算）、失败带 `value`、成功带 `error`、可选成员写成 `null`、`Error` 缺 `message` 或 `message` 为空都拒绝，未知成员忽略。生命周期迁移表、管道阶段顺序、错误码、Baggage 键与值、能力依赖文本、线上编码与消息模板由 `spec/conformance/vectors` 验证。泛型以 PHPStan 的 `@template` 标注。
+`Result<T>`、`Error`、`Maybe<T>` 的 JSON 编码按 RFC-0001「Result」（ADR-0233），与 .NET 参考实现一致：有值成功 `{"ok":true,"value":…}`，无值成功只写 `{"ok":true}`，失败 `{"ok":false,"error":{…}}`。读取时按结果的种类选入口：无值结果带了 `value`（`{}` 与 `null` 也算）、失败带 `value`、成功带 `error`、可选成员写成 `null`、`Error` 缺 `message` 或 `message` 为空、同一层有重复的成员名都拒绝，未知成员忽略；重复成员只在 JSON 文本入口（`fromJson` 一类）核对，`fromWire` 收到的已解码值看不出重复。生命周期迁移表、管道阶段顺序、错误码、Baggage 键与值、能力依赖文本、线上编码与消息模板由 `spec/conformance/vectors` 验证。泛型以 PHPStan 的 `@template` 标注。
 
 ## 开发
 

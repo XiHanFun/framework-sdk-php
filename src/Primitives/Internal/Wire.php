@@ -20,20 +20,28 @@ final class Wire
     }
 
     /**
-     * 以对象模式解码 JSON 文本；不是 JSON 时抛出。
+     * 以对象模式解码 JSON 文本；不是 JSON，或同一层有重复的成员名时抛出。
      *
      * @throws InvalidArgumentException
      */
     public static function decode(string $json, string $what): mixed
     {
         try {
-            return json_decode($json, false, 512, JSON_THROW_ON_ERROR);
+            $decoded = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
         } catch (\JsonException $exception) {
             throw new InvalidArgumentException(
                 sprintf('The %s on the wire is not valid JSON.', $what),
                 previous: $exception,
             );
         }
+        $duplicate = Duplicates::find($json);
+        if ($duplicate !== null) {
+            throw new InvalidArgumentException(
+                sprintf("The %s on the wire has the member '%s' more than once.", $what, $duplicate),
+            );
+        }
+
+        return $decoded;
     }
 
     /**
