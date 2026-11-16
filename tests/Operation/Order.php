@@ -4,57 +4,41 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Tests\Operation;
 
-use XiHan\Framework\Operation\JsonPath;
-use XiHan\Framework\Operation\OperationErrors;
-use XiHan\Framework\Primitives\Result;
+use XiHan\Framework\Operation\Shape;
 
 /**
- * payload-reasons 向量的 order 请求：{ lines: [ { quantity: 整数 } ] }。
+ * payload-reasons 向量的 order 请求：{ lines?: [ { quantity?: 32 位整数 } ] }。
  */
 final readonly class Order
 {
     /**
-     * @param list<int> $quantities 每一行的数量
+     * @param list<int> $quantities 每一行的数量；没有 quantity 的行按 0
      */
     public function __construct(public array $quantities)
     {
     }
 
     /**
-     * 解码；沿着结构记下路径，第一个类型不符的值以它的路径报载荷不合法。
-     *
-     * @param array<string, mixed> $json
-     *
-     * @return Result<self>
+     * 请求的形状。
      */
-    public static function decode(array $json): Result
+    public static function shape(): Shape
     {
-        $linesPath = JsonPath::member(JsonPath::ROOT, 'lines');
-        $lines = $json['lines'] ?? [];
-        if (!is_array($lines) || !array_is_list($lines)) {
-            return self::invalid($linesPath);
-        }
-        $quantities = [];
-        foreach ($lines as $index => $line) {
-            $linePath = JsonPath::index($linesPath, $index);
-            if (!is_array($line) || ($line !== [] && array_is_list($line))) {
-                return self::invalid($linePath);
-            }
-            $quantity = $line['quantity'] ?? 0;
-            if (!is_int($quantity)) {
-                return self::invalid(JsonPath::member($linePath, 'quantity'));
-            }
-            $quantities[] = $quantity;
-        }
-
-        return Result::ok(new self($quantities));
+        return Shape::object([
+            'lines' => Shape::listOf(Shape::object(['quantity' => Shape::int32()])),
+        ]);
     }
 
     /**
-     * @return Result<never>
+     * 用核对过的值创建请求。
      */
-    private static function invalid(string $path): Result
+    public static function create(mixed $value): self
     {
-        return Result::fail(OperationErrors::invalidPayload('orders.check', $path));
+        /** @var array{lines?: list<array{quantity?: int}>|null} $value */
+        $quantities = [];
+        foreach ($value['lines'] ?? [] as $line) {
+            $quantities[] = $line['quantity'] ?? 0;
+        }
+
+        return new self($quantities);
     }
 }

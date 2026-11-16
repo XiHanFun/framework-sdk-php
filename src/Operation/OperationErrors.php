@@ -7,6 +7,7 @@ namespace XiHan\Framework\Operation;
 use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\FrameworkException;
+use XiHan\Framework\Primitives\JsonPath;
 use XiHan\Framework\Primitives\KernelMessages;
 
 /**
@@ -63,8 +64,9 @@ final class OperationErrors
     /**
      * 载荷不合法：KERNEL_VALIDATION_001。
      *
-     * `$reason` 只写出错位置的 JSON 路径，不带类型名（RFC-0011 规则 2，ADR-0124、ADR-0235）：载荷是 null、不是对象
-     * 或根上就不合时写 `$`，某个值的类型不符时写它的路径（用 JsonPath 拼，如 `$.lines[1].quantity`）。
+     * `$reason` 只写出错位置的 JSON 路径，不带类型名（RFC-0011 规则 2，ADR-0124、ADR-0235、ADR-0236）：语法错误、载荷是
+     * null、不是对象或根上缺少必填成员时写 `$`，重复成员写第一处重复的路径，某个值的类型不符时写它的路径（用 JsonPath 拼，
+     * 如 `$.lines[1].quantity`，根是 JsonPath::ROOT）。
      */
     public static function invalidPayload(string $id, string $reason): Error
     {

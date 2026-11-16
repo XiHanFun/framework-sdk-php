@@ -5,15 +5,18 @@ declare(strict_types=1);
 namespace XiHan\Framework\Operation;
 
 use XiHan\Framework\Primitives\Error;
-use XiHan\Framework\Primitives\Internal\Values;
+use XiHan\Framework\Primitives\Internal\Json;
+use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\JsonPath;
 use XiHan\Framework\Primitives\Result;
 
 /**
  * 一个操作的请求解码与响应编码（RFC-0011「XGI 消息」：JSON 是规范编码）。
  *
- * PHP 没有不经反射的类型化 JSON 解码，所以登记操作时显式给出：请求是 JSON 对象，先解码成关联数组，
- * 再交给解码函数变换成请求类型；响应经编码函数变换成可 json_encode 的值。请求与响应的类型名用于类型化调用的核对。
+ * PHP 没有不经反射的类型化 JSON 解码，所以登记操作时显式给出：请求的形状（Shape）与创建函数，响应的编码函数。
+ * 解码按 RFC-0011 规则 2：先过 JSON 文本的共同检查，再按形状以文本顺序核对，第一处问题的路径就是 `reason`；
+ * 核对过的值交给创建函数变换成请求类型。请求与响应的类型名用于类型化调用的核对。
  *
  * @template TRequest
  * @template TResponse
@@ -23,32 +26,32 @@ final readonly class Codec
     /** 可以作为类型名的内置类型 */
     private const array BUILTIN_TYPES = ['array', 'string', 'int', 'float', 'bool', 'mixed'];
 
-    /** @var \Closure(array<string, mixed>): Result<TRequest> */
-    private \Closure $decode;
+    /** @var \Closure(mixed): TRequest */
+    private \Closure $create;
 
     /** @var \Closure(TResponse): mixed */
     private \Closure $encode;
 
     /**
-     * @param \Closure(array<string, mixed>): Result<TRequest> $decode
+     * @param Shape|null $shape 请求的形状；null 即不核对形状，请求是 JSON 对象解码成的关联数组
+     * @param \Closure(mixed): TRequest $create
      * @param \Closure(TResponse): mixed $encode
      */
     private function __construct(
         public string $requestType,
         public string $responseType,
-        \Closure $decode,
+        private ?Shape $shape,
+        \Closure $create,
         \Closure $encode,
     ) {
-        // 包一层带返回类型的闭包：解码函数返回的不是 Result 时在边界上以 TypeError 失败
-        $this->decode = static function (array $json) use ($decode): Result {
-            /** @var array<string, mixed> $json */
-            return $decode($json);
-        };
+        $this->create = $create;
         $this->encode = $encode;
     }
 
     /**
-     * 不做类型变换的编解码：请求是 JSON 对象解码成的关联数组（类型名 array），响应原样 json_encode（类型名 mixed）。
+     * 不做类型变换的编解码：请求是 JSON 对象解码成的关联数组（类型名 array），响应原样编码（类型名 mixed）。
+     *
+     * 关联数组里嵌套的 `{}` 与 `[]` 都是空数组；要区分时用 typed() 与 Shape::any()。
      *
      * @return self<array<string, mixed>, mixed>
      */
@@ -57,7 +60,11 @@ final readonly class Codec
         return new self(
             'array',
             'mixed',
-            static fn (array $json): Result => Result::ok($json),
+            null,
+            static function (mixed $json): array {
+                /** @var array<string, mixed> $json */
+                return $json;
+            },
             static fn (mixed $response): mixed => $response,
         );
     }
@@ -65,23 +72,25 @@ final readonly class Codec
     /**
      * 类型化的编解码。
      *
-     * 解码函数收到请求 JSON 对象的关联数组；形状不对时返回失败，通常用 OperationErrors::invalidPayload()。
+     * 载荷先按 `$shape` 核对（规则见 Shape），合形状后把核对过的值交给创建函数；创建函数抛出的异常按调用期的异常翻译。
      *
      * @template TReq of object
      * @template TRes = mixed
      *
      * @param class-string<TReq> $requestType 请求类名
-     * @param \Closure(array<string, mixed>): Result<TReq> $decode 解码函数
+     * @param Shape $shape 请求的形状：Shape::object() 或 Shape::mapOf()
+     * @param \Closure(mixed): TReq $create 创建函数：收到核对过的值（对象与字典是以成员名为键的数组）
      * @param string $responseType 响应类名，或 array、string、int、float、bool、mixed
-     * @param (\Closure(TRes): mixed)|null $encode 编码函数；null 即原样 json_encode（对象取公开属性或 jsonSerialize）
+     * @param (\Closure(TRes): mixed)|null $encode 编码函数；null 即原样编码（对象取公开属性或 jsonSerialize）
      *
      * @return self<TReq, TRes>
      *
-     * @throws InvalidArgumentException 类型名不存在（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 类型名不存在，或形状的根不是对象或字典（PRIMITIVES_VALIDATION_001）
      */
     public static function typed(
         string $requestType,
-        \Closure $decode,
+        Shape $shape,
+        \Closure $create,
         string $responseType,
         ?\Closure $encode = null,
     ): self {
@@ -89,6 +98,9 @@ final readonly class Codec
             throw new InvalidArgumentException(
                 sprintf("The request type '%s' is not a class or interface.", $requestType),
             );
+        }
+        if (!$shape->isObjectLike()) {
+            throw new InvalidArgumentException('The shape of a request must be an object or a map.');
         }
         if (!in_array($responseType, self::BUILTIN_TYPES, true) && !self::isType($responseType)) {
             throw new InvalidArgumentException(sprintf(
@@ -100,42 +112,53 @@ final readonly class Codec
         $encode ??= static fn (mixed $response): mixed => $response;
 
         /** @var self<TReq, TRes> */
-        return new self($requestType, $responseType, $decode, $encode);
+        return new self($requestType, $responseType, $shape, $create, $encode);
     }
 
     /**
-     * 解码 XGI 载荷：空白等价于 `{}`；不是 JSON、是 null 或不是 JSON 对象时返回 KERNEL_VALIDATION_001。
+     * 解码 XGI 载荷（RFC-0011 规则 2）；不合法时返回 KERNEL_VALIDATION_001，`reason` 是出错位置的 JSON 路径。
+     *
+     * 空载荷等价于 `{}`。先过 JSON 文本的共同检查：语法错误写 `$`，任何一层的重复成员写第一处重复的路径；载荷是 null 或
+     * 不是对象写 `$`；再按形状以文本顺序报第一处问题。
      *
      * @return Result<TRequest>
      */
     public function decode(string $id, string $payload): Result
     {
-        // 只去掉 JSON 允许的空白
-        $json = trim($payload, " \t\n\r");
-        if ($json === '') {
-            $json = '{}';
+        if ($payload === '') {
+            $payload = '{}';
         }
-        if ($json === 'null') {
-            return Result::fail(OperationErrors::invalidPayload($id, JsonPath::ROOT));
+        $problem = JsonText::check($payload);
+        if ($problem !== null) {
+            return Result::fail(OperationErrors::invalidPayload($id, $problem->path));
         }
-        // 原因只写出错位置的 JSON 路径（RFC-0011 规则 2）：null、根不是对象写 $；PHP 的 JSON 解析不报位置，语法错误也写 $
         try {
-            $decoded = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
+            $decoded = json_decode($payload, false, 512, JSON_THROW_ON_ERROR);
         } catch (\JsonException) {
+            // 检查已通过：只剩 stdClass 表示不了的成员名（以 U+0000 开头）
             return Result::fail(OperationErrors::invalidPayload($id, JsonPath::ROOT));
         }
         if (!$decoded instanceof \stdClass) {
             return Result::fail(OperationErrors::invalidPayload($id, JsonPath::ROOT));
         }
-        // 先按对象解码区分 {} 与 []，确认是对象后再解成关联数组交给解码函数
-        /** @var array<string, mixed> $object */
-        $object = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+        if ($this->shape === null) {
+            /** @var array<string, mixed> $object */
+            $object = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
 
-        return ($this->decode)($object);
+            return Result::ok(($this->create)($object));
+        }
+        $path = $this->shape->read($decoded, JsonPath::ROOT, $value);
+        if ($path !== null) {
+            return Result::fail(OperationErrors::invalidPayload($id, $path));
+        }
+
+        return Result::ok(($this->create)($value));
     }
 
     /**
      * 编码响应；编码失败返回 KERNEL_UNEXPECTED_001。
+     *
+     * 数字按值模型写出（整数值的浮点带小数点，非有限的浮点写成字符串，RFC-0001「Result」）。
      *
      * @param TResponse $response
      *
@@ -144,18 +167,13 @@ final readonly class Codec
     public function encode(string $id, mixed $response): Result
     {
         try {
-            return Result::ok(json_encode(($this->encode)($response), Values::JSON_FLAGS));
+            return Result::ok(Json::encode(($this->encode)($response)));
         } catch (\JsonException $exception) {
             return Result::fail(Error::literal(
                 OperationErrors::UNEXPECTED,
                 "The response of '" . $id . "' could not be encoded: " . $exception->getMessage(),
             ));
         }
-    }
-
-    private static function isType(string $name): bool
-    {
-        return class_exists($name) || interface_exists($name);
     }
 
     /**
@@ -172,5 +190,10 @@ final readonly class Codec
             'mixed' => true,
             default => $request instanceof $this->requestType,
         };
+    }
+
+    private static function isType(string $name): bool
+    {
+        return class_exists($name) || interface_exists($name);
     }
 }
