@@ -24,6 +24,7 @@ use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\OperationId;
 use XiHan\Framework\Primitives\PipelineStage;
 use XiHan\Framework\Primitives\Result;
@@ -124,7 +125,7 @@ final class InvokerTest extends TestCase
             }
         }
         $registry = new Registry();
-        $handler = static fn (Context $context, array $request): Result => Result::ok($request);
+        $handler = static fn (Context $context, JsonObject $request): Result => Result::ok($request);
         $registry->add(new Contract('orders.create'), $handler);
         try {
             $registry->add(new Contract('orders.create'), $handler);
@@ -144,7 +145,7 @@ final class InvokerTest extends TestCase
     public function testRegistryCapacity(): void
     {
         $registry = new Registry();
-        $handler = static fn (Context $context, array $request): Result => Result::ok($request);
+        $handler = static fn (Context $context, JsonObject $request): Result => Result::ok($request);
         for ($index = 0; $index < Registry::CAPACITY; $index++) {
             $registry->add(new Contract('items.op' . $index), $handler);
         }
@@ -168,7 +169,7 @@ final class InvokerTest extends TestCase
     public function testListIsSortedAndContractsKeepTheirShape(): void
     {
         $registry = new Registry();
-        $handler = static fn (Context $context, array $request): Result => Result::ok($request);
+        $handler = static fn (Context $context, JsonObject $request): Result => Result::ok($request);
         $registry->add(new Contract('orders.list'), $handler, owner: 'xihan.sales.orders');
         $registry->add(
             new Contract('invoices.get', Stability::Preview, [Expose::Http, Expose::Ai], permission: 'invoices.read'),
@@ -196,26 +197,52 @@ final class InvokerTest extends TestCase
         new Schema('[]', '{}');
     }
 
-    public function testTheJsonCodecPassesArrays(): void
+    public function testTheJsonCodecReadsByTheValueModel(): void
     {
         $registry = new Registry();
         $registry->add(
             new Contract('echoes.create'),
-            static fn (Context $context, array $request): Result => Result::ok(['echo' => $request, 'tenant' => $context->tenant()]),
+            static fn (Context $context, JsonObject $request): Result => Result::ok(['echo' => $request, 'tenant' => $context->tenant()]),
         );
+        $seen = null;
+        $registry->add(new Contract('echoes.inspect'), static function (Context $context, JsonObject $request) use (&$seen): Result {
+            $seen = $request;
+
+            return Result::fail(Error::validation('ECHOES_VALIDATION_001', 'echoes.rejected', ['request' => $request]));
+        });
         $invoker = new Invoker($registry);
         $response = $invoker->invoke(Context::create(baggage: [BaggageKeys::TENANT => 't1']), new Request('echoes.create', '{"text":"hi","tags":[]}'));
         self::assertSame('{"echo":{"text":"hi","tags":[]},"tenant":"t1"}', $response->payload);
-        $typed = $invoker->invokeTyped(Context::create(), 'echoes.create', ['text' => 'x'], 'mixed');
-        self::assertSame(['echo' => ['text' => 'x'], 'tenant' => null], $typed->valueOrThrow());
+        $typed = $invoker->invokeTyped(Context::create(), 'echoes.create', JsonObject::of(['text' => 'x']), 'mixed');
+        self::assertEquals(['echo' => JsonObject::of(['text' => 'x']), 'tenant' => null], $typed->valueOrThrow());
+        self::assertSame(OperationErrors::TYPE_MISMATCH, $invoker->invokeTyped(Context::create(), 'echoes.create', ['text' => 'x'], 'mixed')->error()?->code);
+
+        // 无类型的路径同样按值模型读（ADR-0236）：{} 与 [] 不混淆，纯数字与以 U+0000 开头的成员名原样，64 位整数精确
+        $payload = '{"o":{},"l":[],"0":{"1":[{}]},"\u0000x":1,"n":9007199254740993,"f":2.0}';
+        $echo = $invoker->invoke(Context::create(), new Request('echoes.create', $payload));
+        self::assertSame('{"echo":' . $payload . ',"tenant":null}', $echo->payload);
+
+        // 上溢的数字读成无穷：放进错误细节时按值模型写成 "Infinity"，作为响应写不出
+        $error = $invoker->invoke(Context::create(), new Request('echoes.inspect', '{"big":1e400,"tiny":1e-400}'))->outcome->error();
+        self::assertInstanceOf(JsonObject::class, $seen);
+        self::assertSame(INF, $seen['big']);
+        self::assertSame(0.0, $seen->get('tiny'));
+        self::assertSame(
+            '{"code":"ECHOES_VALIDATION_001","message":"echoes.rejected (request={\"big\":Infinity,\"tiny\":0})",'
+            . '"messageKey":"echoes.rejected","details":{"request":{"big":"Infinity","tiny":0.0}}}',
+            $error?->toJson(),
+        );
+        $overflow = $invoker->invoke(Context::create(), new Request('echoes.create', '{"big":1e400}'));
+        self::assertSame('kernel.invocation.unhandled_exception', $overflow->outcome->error()?->messageKey);
+        self::assertNull($overflow->payload);
     }
 
     public function testEncodingFailuresAreUnexpected(): void
     {
         $registry = new Registry();
-        $registry->add(new Contract('names.get'), static fn (Context $context, array $request): Result => Result::ok(['value' => "\xff"]));
-        $registry->add(new Contract('numbers.get'), static fn (Context $context, array $request): Result => Result::ok(['ratio' => NAN]));
-        $registry->add(new Contract('floats.get'), static fn (Context $context, array $request): Result => Result::ok([2.0, -0.0, 1e17]));
+        $registry->add(new Contract('names.get'), static fn (Context $context, JsonObject $request): Result => Result::ok(['value' => "\xff"]));
+        $registry->add(new Contract('numbers.get'), static fn (Context $context, JsonObject $request): Result => Result::ok(['ratio' => NAN]));
+        $registry->add(new Contract('floats.get'), static fn (Context $context, JsonObject $request): Result => Result::ok([2.0, -0.0, 1e17]));
         $registry->add(new Contract('broken.get'), static fn (Context $context, CreateOrder $request): Result => Result::ok([]), Codec::typed(
             CreateOrder::class,
             CreateOrder::shape(),
@@ -262,10 +289,10 @@ final class InvokerTest extends TestCase
         $registry = new Registry();
         /** @var Invoker|null $invoker 先登记处理函数、再建调用器，处理函数里经引用取到它 */
         $invoker = null;
-        $registry->add(new Contract('inner.get'), static fn (Context $context, array $request): Result => Result::ok([
+        $registry->add(new Contract('inner.get'), static fn (Context $context, JsonObject $request): Result => Result::ok([
             'inner' => Current::descriptor($context)?->contract->id,
         ]));
-        $registry->add(new Contract('outer.get'), static function (Context $context, array $request) use (&$invoker): Result {
+        $registry->add(new Contract('outer.get'), static function (Context $context, JsonObject $request) use (&$invoker): Result {
             if (!$invoker instanceof Invoker) {
                 throw new \LogicException('The invoker is built before the first call.');
             }
@@ -284,7 +311,7 @@ final class InvokerTest extends TestCase
         self::assertNull(Current::request($context));
         self::assertNull(Current::responsePayload($context));
 
-        $typed = $invoker->invokeTyped($context, 'inner.get', [], 'mixed');
+        $typed = $invoker->invokeTyped($context, 'inner.get', JsonObject::of(), 'mixed');
         self::assertTrue($typed->isOk());
         $again = $invoker->invoke($context, new Request('inner.get'));
         self::assertSame('{"inner":"inner.get"}', $again->payload, 'a typed call leaves no terminal behind');
@@ -294,7 +321,7 @@ final class InvokerTest extends TestCase
     {
         $registry = new Registry();
         $calls = 0;
-        $registry->add(new Contract('orders.get'), static function (Context $context, array $request) use (&$calls): Result {
+        $registry->add(new Contract('orders.get'), static function (Context $context, JsonObject $request) use (&$calls): Result {
             $calls++;
 
             return Result::ok(['fresh' => true]);
@@ -313,7 +340,7 @@ final class InvokerTest extends TestCase
         self::assertSame(0, $calls);
 
         // 类型化调用回放不了记录的载荷：没有响应对象，按规则 9 报 no_response
-        $typed = $invoker->invokeTyped(Context::create(), 'orders.get', [], 'mixed')->error();
+        $typed = $invoker->invokeTyped(Context::create(), 'orders.get', JsonObject::of(), 'mixed')->error();
         self::assertNotNull($typed);
         self::assertSame(OperationErrors::UNEXPECTED, $typed->code);
         self::assertSame('kernel.operation.no_response', $typed->messageKey);
@@ -329,7 +356,7 @@ final class InvokerTest extends TestCase
         self::assertSame('kernel.operation.no_response', $response->outcome->error()?->messageKey);
         self::assertNull($response->payload);
         self::assertSame("Operation 'orders.get' completed without producing a response.", $response->outcome->error()->message());
-        self::assertSame('kernel.operation.no_response', $invoker->invokeTyped(Context::create(), 'orders.get', [], 'mixed')->error()?->messageKey);
+        self::assertSame('kernel.operation.no_response', $invoker->invokeTyped(Context::create(), 'orders.get', JsonObject::of(), 'mixed')->error()?->messageKey);
 
         $denied = (new PipelineBuilder())->useAt(
             new ClosureMiddleware('Deny', static fn (Context $context, \Closure $next): Result => Result::fail(
@@ -338,7 +365,7 @@ final class InvokerTest extends TestCase
             PipelineStage::Authorize,
         );
         $invoker = new Invoker($registry, $denied);
-        self::assertSame('ORDERS_DENIED_001', $invoker->invokeTyped(Context::create(), 'orders.get', [], 'mixed')->error()?->code);
+        self::assertSame('ORDERS_DENIED_001', $invoker->invokeTyped(Context::create(), 'orders.get', JsonObject::of(), 'mixed')->error()?->code);
         self::assertSame('ORDERS_DENIED_001', $invoker->invoke(Context::create(), new Request('orders.get'))->outcome->error()?->code);
     }
 
@@ -346,7 +373,7 @@ final class InvokerTest extends TestCase
     {
         $registry = new Registry();
         $calls = [];
-        $registry->add(new Contract('orders.get'), static function (Context $context, array $request) use (&$calls): Result {
+        $registry->add(new Contract('orders.get'), static function (Context $context, JsonObject $request) use (&$calls): Result {
             $calls[] = 'handler';
 
             return Result::ok(['id' => 'o1']);
@@ -368,7 +395,7 @@ final class InvokerTest extends TestCase
         $expired = Context::create(timeout: 0.0, clock: $clock);
         $errors = [
             $invoker->invoke($expired, new Request('orders.get'))->outcome->error(),
-            $invoker->invokeTyped($expired, 'orders.get', [], 'mixed')->error(),
+            $invoker->invokeTyped($expired, 'orders.get', JsonObject::of(), 'mixed')->error(),
         ];
         foreach ($errors as $error) {
             self::assertNotNull($error);
@@ -431,7 +458,7 @@ final class InvokerTest extends TestCase
     public function testOnlyExceptionsAfterTheObserveStepAreTranslated(): void
     {
         $registry = new Registry();
-        $registry->add(new Contract('orders.get'), static fn (Context $context, array $request): Result => Result::ok([]));
+        $registry->add(new Contract('orders.get'), static fn (Context $context, JsonObject $request): Result => Result::ok([]));
         $crash = static fn (string $name): ClosureMiddleware => new ClosureMiddleware(
             $name,
             static fn (Context $context, \Closure $next): Result => throw new \RuntimeException($name),
@@ -476,14 +503,14 @@ final class InvokerTest extends TestCase
     public function testThrownExceptionsBecomeUnexpectedErrors(): void
     {
         $registry = new Registry();
-        $registry->add(new Contract('orders.crash'), static fn (Context $context, array $request): Result => throw new \RuntimeException('boom'));
-        $registry->add(new Contract('orders.misconfigured'), static fn (Context $context, array $request): Result => throw new ConfigurationException(
+        $registry->add(new Contract('orders.crash'), static fn (Context $context, JsonObject $request): Result => throw new \RuntimeException('boom'));
+        $registry->add(new Contract('orders.misconfigured'), static fn (Context $context, JsonObject $request): Result => throw new ConfigurationException(
             'The orders feature is not configured.',
             'ORDERS_UNEXPECTED_001',
         ));
         // 故意登记不返回 Result 的处理函数，核对运行期的类型边界
         // @phpstan-ignore argument.type
-        $registry->add(new Contract('orders.untyped'), static fn (Context $context, array $request): mixed => 'not a result');
+        $registry->add(new Contract('orders.untyped'), static fn (Context $context, JsonObject $request): mixed => 'not a result');
         $seen = [];
         $observe = (new PipelineBuilder())->useAt(
             new ClosureMiddleware('Observe', static function (Context $context, \Closure $next) use (&$seen): Result {
@@ -508,7 +535,7 @@ final class InvokerTest extends TestCase
         self::assertSame('An unhandled exception occurred during the invocation.', $crash->message());
         self::assertNull($crash->inner, 'only framework exceptions are carried as the inner error');
 
-        $misconfigured = $invoker->invokeTyped($context, 'orders.misconfigured', [], 'mixed')->error();
+        $misconfigured = $invoker->invokeTyped($context, 'orders.misconfigured', JsonObject::of(), 'mixed')->error();
         self::assertSame('ORDERS_UNEXPECTED_001', $misconfigured?->inner?->code);
 
         $untyped = $invoker->invoke($context, new Request('orders.untyped'))->outcome->error();

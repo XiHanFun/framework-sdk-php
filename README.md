@@ -73,7 +73,7 @@ $response = $invoker->invoke($context, new Request('orders.create', '{"quantity"
 echo json_encode($response->outcome), ' ', $response->payload; // {"ok":true} {"id":"o-c1","quantity":2}
 ```
 
-1. 操作用 `Registry::add` 登记：契约、处理函数、`Codec` 与可选的 `Schema`。PHP 没有不经反射的类型化 JSON 解码，所以 `Codec::typed` 显式给出请求类型名、请求的形状（`Shape`，根是 `Shape::object()` 或 `Shape::mapOf()`）、创建函数与响应类型名；不需要类型时用缺省的 `Codec::json()`，请求就是 JSON 对象解码成的关联数组。解码按 RFC-0011 规则 2（见下文「与语言相关的映射」）：先过 JSON 文本的共同检查，再按形状以文本顺序核对，第一处问题返回 `KERNEL_VALIDATION_001` + `kernel.operation.invalid_payload`，参数 `id` 与 `reason`。`reason` 只写出错位置的 JSON 路径：语法错误、`null`、不是对象与根上缺少必填成员写 `$`，重复成员写第一处重复的路径，值的类型不符写它的路径（如 `$.lines[1].quantity`，含空格、点、引号等字符的成员名写成 `$['unit price']`，`JsonPath` 按同一写法拼）。空载荷等价于 `{}`，只有空白不是 JSON。重复登记与登记表已满带共用表的键与参数（`kernel.operation.duplicate` 的 `id`、`owner`，`kernel.operation.registry_full` 的 `capacity`）。
+1. 操作用 `Registry::add` 登记：契约、处理函数、`Codec` 与可选的 `Schema`。PHP 没有不经反射的类型化 JSON 解码，所以 `Codec::typed` 显式给出请求类型名、请求的形状（`Shape`，根是 `Shape::object()` 或 `Shape::mapOf()`）、创建函数与响应类型名；不需要类型时用缺省的 `Codec::json()`，请求是按值模型读出的 `JsonObject`。解码按 RFC-0011 规则 2（见下文「与语言相关的映射」）：先过 JSON 文本的共同检查，再按形状以文本顺序核对，第一处问题返回 `KERNEL_VALIDATION_001` + `kernel.operation.invalid_payload`，参数 `id` 与 `reason`。`reason` 只写出错位置的 JSON 路径：语法错误、`null`、不是对象与根上缺少必填成员写 `$`，重复成员写第一处重复的路径，值的类型不符写它的路径（如 `$.lines[1].quantity`，含空格、点、引号等字符的成员名写成 `$['unit price']`，`JsonPath` 按同一写法拼）。空载荷等价于 `{}`，只有空白不是 JSON。重复登记与登记表已满带共用表的键与参数（`kernel.operation.duplicate` 的 `id`、`owner`，`kernel.operation.registry_full` 的 `capacity`）。
 2. 可恢复失败返回 `Result::fail(...)`，不抛异常；错误码按 `<领域大写>_<KIND>_<NNN>`，文案用消息键，`Error::message()` 经 `MessageScope::setDefault(new MessageCatalog([...]), 'zh-CN')` 设置的目录按区域解析，没有时是「键 (参数)」。内核错误的码、键、参数与 en-US 模板与规范的共用表（`kernel-messages.json`）逐字一致，`KernelMessages` 自带这些英文模板（另有清单读取的 `kernel.manifest.*` 与 `primitives.manifest.*`，取自 .NET 的 en-US 语言文件）：目录解析不出内核键时用它们，配置期异常的消息也用它们写成英文。模板按 RFC-0010「模板」格式化：
    - 值先归到值模型（PHP 的归法见下文），数组与对象写成紧凑的 JSON，对象成员按名字的 UTF-16 码元序排列，超过 64 层的容器写 `null`。
    - 格式说明符只认 `^[DdFfNnXx][0-9]{0,2}$`：`D` 与 `X` / `x` 只用于整数（`X` 只用于非负整数），`F` 与 `N` 用于整数与浮点，按浮点数的精确值舍入、正好一半取偶（`{n:F2}` 取 0.125 得 `0.12`、取 2.675 得 `2.67`）；其余说明符（`E2`、`G`、`0.00`、`yyyy`、printf 写法、`D100`）与不适用的值一律按无格式输出。
@@ -102,7 +102,7 @@ echo $manifest->toJson();                                         // 按 RFC-000
 
 echo Result::fail(Error::literal('ORDERS_CONFLICT_001', 'stale'))->toJson();
 // {"ok":false,"error":{"code":"ORDERS_CONFLICT_001","message":"stale"}}
-$result = Result::fromJson('{"ok":true,"value":{"id":"o1"}}');   // 有值结果；对象按 stdClass 交出
+$result = Result::fromJson('{"ok":true,"value":{"id":"o1"}}');   // 有值结果；对象是 JsonObject，$result->valueOrThrow()['id']
 $done = Result::unitFromJson('{"ok":true}');                       // 无值结果
 $found = Result::maybeFromJson('{"ok":true,"value":null}');        // 值类型为 Maybe 的结果，null 即无值
 ```
@@ -122,9 +122,9 @@ $found = Result::maybeFromJson('{"ok":true,"value":null}');        // 值类型�
 
 规范把取决于语言的地方交给各 SDK 写明（ADR-0236），PHP 的做法：
 
-- **JSON 文本的共同检查**（RFC-0001「JSON 文本」）：语法、嵌套层数、孤立的代理项转义与原始控制字符交给 `json_decode`，非法 UTF-8（含过长编码与编码成 UTF-8 的代理项）由 PCRE 的 UTF-8 校验拒绝，重复成员在原文上找（`json_decode` 遇到重复取最后一个）。载荷与清单过了检查之后按内部的读取器读成保留文本顺序与原文写法的树，不经 `stdClass`，以 U+0000 开头的成员名照常核对、报路径。线上编码（`Result::fromJson`、`Error::fromJson`）交出的是 `json_decode` 的对象模式结果，`stdClass` 放不下以 U+0000 开头的成员名，这样的文本抛 `InvalidArgumentException`。
+- **JSON 文本的共同检查**（RFC-0001「JSON 文本」）：语法、嵌套层数、孤立的代理项转义与原始控制字符交给 `json_decode`，非法 UTF-8（含过长编码与编码成 UTF-8 的代理项）由 PCRE 的 UTF-8 校验拒绝，重复成员在原文上找（`json_decode` 遇到重复取最后一个）。载荷与清单过了检查之后按内部的读取器读成保留文本顺序与原文写法的树，不经 `stdClass`，以 U+0000 开头的成员名照常核对、报路径。线上编码（`Result::fromJson`、`Error::fromJson`）与无类型的载荷（`Codec::json()`）用同一个读取器按值模型读，同样不经 `stdClass`。
 - **文法的匹配**（RFC-0001「文法的匹配」）：PCRE 的 `$` 在结尾的换行之前也算匹配，所以规范文法的正则都带 `D` 修饰符，`xihan.tenant\n`、带换行的 `traceparent` 与 `kernel.hosting@1\n` 都不合法。
-- **值模型**（RFC-0010「模板」）：`null`、`bool`、`string`、`int`（PHP 的 `int` 就是 64 位）、`float` 原样；`json_decode` 把 64 位范围内的整数写法读成 `int`，其余读成 `float`，与模型一致。数组是列表（`array_is_list`，含空数组 `[]`）时是数组，否则是对象，键写成字符串；`stdClass` 是对象。模型之外的值写成 PHP 的文本：`BackedEnum` 取值的文本，`UnitEnum` 取名字，`Stringable` 取 `(string)`，`DateTimeInterface` 取 ATOM 格式（`2026-11-16T10:00:00+08:00`），`JsonSerializable` 取 `jsonSerialize()` 再归入，其余对象写类型名。它们不跨语言，插件要跨语言格式化时先转成字符串。
+- **值模型**（RFC-0010「模板」）：`null`、`bool`、`string`、`int`（PHP 的 `int` 就是 64 位）、`float` 原样；`json_decode` 把 64 位范围内的整数写法读成 `int`，其余读成 `float`，与模型一致。SDK 读出的 JSON 对象是 `JsonObject`：不可变，成员按文本顺序，成员名原样（以 U+0000 开头、纯数字的都行），`{}` 与 `[]` 不混淆，用 `$object['name']`、`get()` 取成员，`with()` 得到改了一个成员的新对象，`toJson()` 与响应编码按成员原样写出；自己 `json_encode` 时取 `stdClass`（成员名以 U+0000 开头时退成关联数组）。PHP 自己的数组是列表（`array_is_list`，含空数组 `[]`）时是数组，否则是对象，键写成字符串；`stdClass` 也是对象。模型之外的值写成 PHP 的文本：`BackedEnum` 取值的文本，`UnitEnum` 取名字，`Stringable` 取 `(string)`，`DateTimeInterface` 取 ATOM 格式（`2026-11-16T10:00:00+08:00`），`JsonSerializable` 取 `jsonSerialize()` 再归入，其余对象写类型名。它们不跨语言，插件要跨语言格式化时先转成字符串。
 - **请求的形状**（RFC-0011 规则 2）：成员用 `Shape` 声明，成员名区分大小写，未知成员忽略，数字不从字符串读。
   - 必填：`Shape::string()->required()`，缺少时在所在对象结束时报该对象的路径；只要求出现，值为 `null` 也算出现。
   - 可选：不加 `required()`，缺少时交给创建函数的数组里没有这个键。
@@ -132,7 +132,7 @@ $found = Result::maybeFromJson('{"ok":true,"value":null}');        // 值类型�
   - 整数不接受 `1.0` 与 `1e2`，超出范围即不符；`float()` 接受整数写法，`1e400` 是无穷，`1e-400` 是 0。
   - 交给创建函数的值：对象与字典是以成员名为键的数组（PHP 会把纯数字的键转成整数）。
   - 任意 JSON：`any()` 交出 `RawJson`，`json` 是读到的原文，`decode()` 取 `json_decode` 的对象模式结果；响应与 `toJson()` 写出时把原文原样放回，`1e400`、超出双精度的整数与 `2.0` 写回时 JSON 值不变（RFC-0011 规则 2）。`RawJson::of()` 包装自己的 JSON 文本，先过共同检查。
-  - `Codec::json()` 不核对形状，请求是 `json_decode` 的关联数组：嵌套的 `{}` 与 `[]` 都是空数组，`1e400` 读成无穷；要原样保留时用 `typed()` 与 `any()`。
+  - `Codec::json()` 不核对形状，请求是按值模型读出的 `JsonObject`：64 位范围内的整数精确，`1e400` 这类上溢的数字照 .NET 读成双精度无穷——放进错误细节这类无类型的值时写成字符串 `"Infinity"`，作为响应原样返回时写不出（`unhandled_exception`）。要原样保留原文时用 `typed()` 与 `any()`。
 
 ## 开发
 

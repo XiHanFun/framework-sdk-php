@@ -9,6 +9,7 @@ use XiHan\Framework\Primitives\Internal\JsonNode;
 use XiHan\Framework\Primitives\Internal\JsonReader;
 use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\JsonPath;
 use XiHan\Framework\Primitives\Result;
 
@@ -50,20 +51,21 @@ final readonly class Codec
     }
 
     /**
-     * 不做类型变换的编解码：请求是 JSON 对象解码成的关联数组（类型名 array），响应原样编码（类型名 mixed）。
+     * 不做类型变换的编解码：请求是按值模型读出的 JSON 对象（JsonObject），响应原样编码（类型名 mixed）。
      *
-     * 关联数组里嵌套的 `{}` 与 `[]` 都是空数组；要区分时用 typed() 与 Shape::any()。
+     * 值模型（ADR-0236）：对象是 JsonObject（成员名原样，`{}` 与 `[]` 不混淆），数组是列表，64 位范围内的整数写法是 int，
+     * 其余数字是 float（`1e400` 是无穷，原样返回时写不出；要保留原文时用 typed() 与 Shape::any()）。
      *
-     * @return self<array<string, mixed>, mixed>
+     * @return self<JsonObject, mixed>
      */
     public static function json(): self
     {
         return new self(
-            'array',
+            JsonObject::class,
             'mixed',
             null,
-            static function (mixed $json): array {
-                /** @var array<string, mixed> $json */
+            static function (mixed $json): JsonObject {
+                /** @var JsonObject $json */
                 return $json;
             },
             static fn (mixed $response): mixed => $response,
@@ -139,10 +141,8 @@ final readonly class Codec
             return Result::fail(OperationErrors::invalidPayload($id, JsonPath::ROOT));
         }
         if ($this->shape === null) {
-            /** @var array<string, mixed> $object */
-            $object = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
-
-            return Result::ok(($this->create)($object));
+            // 无类型的路径按值模型读：对象是 JsonObject（{} 与 [] 不混淆），64 位范围内的整数精确，1e400 是无穷
+            return Result::ok(($this->create)(JsonReader::toValue($root)));
         }
         $path = $this->shape->read($root, JsonPath::ROOT, $payload, $value);
         if ($path !== null) {

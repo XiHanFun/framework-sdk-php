@@ -17,6 +17,7 @@ use XiHan\Framework\Pipeline\PipelineBuilder;
 use XiHan\Framework\Primitives\PipelineStage;
 use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\KernelMessages;
 use XiHan\Framework\Primitives\LocaleName;
 use XiHan\Framework\Primitives\MessageCatalog;
@@ -97,7 +98,7 @@ final class KernelMessagesTest extends TestCase
     private static function producers(): array
     {
         $registry = new Registry();
-        $handler = static fn (Context $context, array $request): Result => Result::ok($request);
+        $handler = static fn (Context $context, JsonObject $request): Result => Result::ok($request);
         $registry->add(new Contract('orders.create'), $handler, owner: 'xihan.sales.orders');
         $invoker = new Invoker($registry);
         $silent = new Invoker($registry, (new PipelineBuilder())->useAt(

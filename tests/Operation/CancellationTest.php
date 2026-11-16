@@ -13,6 +13,7 @@ use XiHan\Framework\Operation\Contract;
 use XiHan\Framework\Operation\Invoker;
 use XiHan\Framework\Operation\Registry;
 use XiHan\Framework\Operation\Request;
+use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Tests\Invocation\ManualClock;
 
@@ -80,7 +81,7 @@ final class CancellationTest extends TestCase
 
             throw new CancelledException('cancelled');
         });
-        $typed = $invoker->invokeTyped(Context::create(cancellation: $source->cancellation()), 'orders.get', [], 'mixed');
+        $typed = $invoker->invokeTyped(Context::create(cancellation: $source->cancellation()), 'orders.get', JsonObject::of(), 'mixed');
         self::assertSame('KERNEL_CANCELLED_001', $typed->error()?->code);
     }
 
@@ -116,7 +117,7 @@ final class CancellationTest extends TestCase
     private static function invoker(\Closure $handle): Invoker
     {
         $registry = new Registry();
-        $registry->add(new Contract('orders.get'), static fn (Context $context, array $request): Result => $handle());
+        $registry->add(new Contract('orders.get'), static fn (Context $context, JsonObject $request): Result => $handle());
 
         return new Invoker($registry);
     }

@@ -31,7 +31,7 @@ final class Registry implements \Countable
      *
      * @param Contract $contract 契约
      * @param \Closure(Context, TRequest): Result<TResponse> $handler 处理函数；可恢复失败返回失败的 Result，不抛异常
-     * @param Codec<TRequest, TResponse>|null $codec 编解码；null 即 Codec::json()，请求是关联数组
+     * @param Codec<TRequest, TResponse>|null $codec 编解码；null 即 Codec::json()，请求是按值模型读出的 JsonObject
      * @param Schema|null $schema 请求与响应的 JSON Schema
      * @param string $owner 归属：清单 ID 或 app
      *
