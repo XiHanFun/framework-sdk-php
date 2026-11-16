@@ -44,7 +44,16 @@ final readonly class Descriptor
         if ($request->isFailed()) {
             return new Response($request->toUnit(), null);
         }
-        $result = $this->handle($context, $request->valueOrThrow());
+
+        return $this->respond($context, $request->valueOrThrow());
+    }
+
+    /**
+     * 以解码后的请求执行处理函数并编码响应。
+     */
+    public function respond(Context $context, mixed $request): Response
+    {
+        $result = $this->handle($context, $request);
         if ($result->isFailed()) {
             return new Response($result->toUnit(), null);
         }

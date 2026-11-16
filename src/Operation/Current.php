@@ -20,6 +20,9 @@ final class Current
     /** @internal 对象袋里放响应载荷的键 */
     public const string RESPONSE_KEY = self::class . '::response';
 
+    /** @internal 对象袋里放解码后的请求对象的键 */
+    public const string REQUEST_OBJECT_KEY = self::class . '::requestObject';
+
     /** @internal 对象袋里放类型化调用终点的键 */
     public const string TERMINAL_KEY = self::class . '::terminal';
 
@@ -45,6 +48,15 @@ final class Current
         $request = $context->items()->get(self::REQUEST_KEY);
 
         return $request instanceof Request ? $request : null;
+    }
+
+    /**
+     * 返回解码后的请求对象（RFC-0011 调用器规则 3 的 FindOperationRequest）：原始调用由 Validate 阶段的内置步骤解码后写入，
+     * 类型化调用是调用方给的请求；还没有解码时为 null。
+     */
+    public static function requestObject(Context $context): mixed
+    {
+        return $context->items()->get(self::REQUEST_OBJECT_KEY);
     }
 
     /**

@@ -15,8 +15,10 @@ use XiHan\Framework\Operation\OperationErrors;
 use XiHan\Framework\Operation\Registry;
 use XiHan\Framework\Operation\Request;
 use XiHan\Framework\Operation\Schema;
+use XiHan\Framework\Operation\Shape;
 use XiHan\Framework\Pipeline\ClosureMiddleware;
 use XiHan\Framework\Pipeline\PipelineBuilder;
+use XiHan\Framework\Pipeline\Placement;
 use XiHan\Framework\Primitives\BaggageKeys;
 use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\Error;
@@ -80,8 +82,11 @@ final class InvokerTest extends TestCase
         )->outcome->error()?->message());
         $empty = $invoker->invoke(Context::create(), new Request('orders.create'));
         self::assertSame('ORDERS_VALIDATION_001', $empty->outcome->error()?->code, 'an empty payload is {}');
-        $blank = $invoker->invoke(Context::create(), new Request('orders.create', " \n"));
-        self::assertSame('ORDERS_VALIDATION_001', $blank->outcome->error()?->code, 'a blank payload is {}');
+        // 只有空白不是 JSON（RFC-0001「JSON 文本」），只有空载荷等价于 {}
+        $blank = $invoker->invoke(Context::create(), new Request('orders.create', " \n"))->outcome->error();
+        self::assertSame(['id' => 'orders.create', 'reason' => '$'], $blank?->details);
+        $duplicate = $invoker->invoke(Context::create(), new Request('orders.create', '{"quantity":1,"quantity":2}'));
+        self::assertSame(['id' => 'orders.create', 'reason' => '$.quantity'], $duplicate->outcome->error()?->details);
     }
 
     public function testTypedInvokeChecksTypes(): void
@@ -95,7 +100,11 @@ final class InvokerTest extends TestCase
 
         $mismatch = $invoker->invokeTyped(Context::create(), 'orders.create', new CreateOrder(3), 'string');
         self::assertSame(OperationErrors::TYPE_MISMATCH, $mismatch->error()?->code);
-        self::assertSame('orders.create', $mismatch->error()->details['id'] ?? null);
+        self::assertSame(['id' => 'orders.create'], $mismatch->error()->details, 'only the id, no language type names');
+        self::assertSame(
+            "Operation 'orders.create' was invoked with request or response types that do not match its registration.",
+            $mismatch->error()->message(),
+        );
         $wrongRequest = $invoker->invokeTyped(Context::create(), 'orders.create', ['quantity' => 3], OrderCreated::class);
         self::assertSame(OperationErrors::TYPE_MISMATCH, $wrongRequest->error()?->code);
         $missing = $invoker->invokeTyped(Context::create(), 'orders.missing', new CreateOrder(3), OrderCreated::class);
@@ -204,13 +213,17 @@ final class InvokerTest extends TestCase
     public function testEncodingFailuresAreUnexpected(): void
     {
         $registry = new Registry();
-        $registry->add(new Contract('numbers.get'), static fn (Context $context, array $request): Result => Result::ok(['value' => INF]));
-        $response = (new Invoker($registry))->invoke(Context::create(), new Request('numbers.get'));
+        $registry->add(new Contract('names.get'), static fn (Context $context, array $request): Result => Result::ok(['value' => "\xff"]));
+        $registry->add(new Contract('numbers.get'), static fn (Context $context, array $request): Result => Result::ok([2.0, INF, NAN]));
+        $invoker = new Invoker($registry);
+        $response = $invoker->invoke(Context::create(), new Request('names.get'));
         $error = $response->outcome->error();
         self::assertNotNull($error);
         self::assertSame(OperationErrors::UNEXPECTED, $error->code);
-        self::assertStringStartsWith("The response of 'numbers.get' could not be encoded: ", $error->message());
+        self::assertStringStartsWith("The response of 'names.get' could not be encoded: ", $error->message());
         self::assertNull($response->payload);
+        // 数字按值模型写出：整数值的浮点带小数点，非有限的浮点写成字符串（RFC-0001「Result」）
+        self::assertSame('[2.0,"Infinity","NaN"]', $invoker->invoke(Context::create(), new Request('numbers.get'))->payload);
     }
 
     public function testCallsRestoreTheItemsTheyReplace(): void
@@ -298,7 +311,7 @@ final class InvokerTest extends TestCase
         self::assertSame('ORDERS_DENIED_001', $invoker->invoke(Context::create(), new Request('orders.get'))->outcome->error()?->code);
     }
 
-    public function testExpiredDeadlinesEndTheCallBeforeTheFirstMiddleware(): void
+    public function testExpiredDeadlinesEndTheCallInTheResilienceStage(): void
     {
         $registry = new Registry();
         $calls = [];
@@ -307,14 +320,18 @@ final class InvokerTest extends TestCase
 
             return Result::ok(['id' => 'o1']);
         });
-        $invoker = new Invoker($registry, (new PipelineBuilder())->useAt(
-            new ClosureMiddleware('Observe', static function (Context $context, \Closure $next) use (&$calls): Result {
-                $calls[] = 'middleware';
+        $record = static function (string $name) use (&$calls): ClosureMiddleware {
+            return new ClosureMiddleware($name, static function (Context $context, \Closure $next) use (&$calls, $name): Result {
+                $calls[] = $name;
 
                 return $next($context);
-            }),
-            PipelineStage::Observe,
-        ));
+            });
+        };
+        $builder = (new PipelineBuilder())
+            ->useAt($record('Observe'), PipelineStage::Observe)
+            ->useAt($record('EarlyResilience'), PipelineStage::Resilience, Placement::Beginning)
+            ->useAt($record('Authorize'), PipelineStage::Authorize);
+        $invoker = new Invoker($registry, $builder);
         $clock = new \XiHan\Framework\Tests\Invocation\ManualClock();
         // 构造上下文时不判断截止时间：已过期的上下文照样建得出来
         $expired = Context::create(timeout: 0.0, clock: $clock);
@@ -328,12 +345,101 @@ final class InvokerTest extends TestCase
             self::assertSame('kernel.invocation.deadline_before_start', $error->messageKey);
             self::assertSame([], $error->details);
         }
-        self::assertSame([], $calls, 'neither middleware nor handler runs');
+        // 截止时间在 Resilience 阶段的 Beginning 上按归属 xihan.kernel.core 核对：之前的阶段照常执行，
+        // 同位置上归属 app 排在它前面，之后的中间件与处理函数不执行（RFC-0011 规则 10）
+        self::assertSame(['Observe', 'EarlyResilience', 'Observe', 'EarlyResilience'], $calls);
 
+        $calls = [];
         $live = Context::create(timeout: 1.0, clock: $clock);
         self::assertSame('{"id":"o1"}', $invoker->invoke($live, new Request('orders.get'))->payload);
-        self::assertSame(['middleware', 'handler'], $calls);
+        self::assertSame(['Observe', 'EarlyResilience', 'Authorize', 'handler'], $calls);
         self::assertSame('KERNEL_NOTFOUND_001', $invoker->invoke($expired, new Request('orders.missing'))->outcome->error()?->code);
+        // 截止时间先于解码：载荷不合法的过期调用报超时
+        self::assertSame('KERNEL_TIMEOUT_001', $invoker->invoke($expired, new Request('orders.get', '['))->outcome->error()?->code);
+    }
+
+    public function testDecodingHappensAtTheStartOfTheValidateStage(): void
+    {
+        $registry = new Registry();
+        $registry->add(
+            new Contract('orders.create'),
+            static fn (Context $context, CreateOrder $request): Result => Result::ok(new OrderCreated('o1', $request->quantity)),
+            Codec::typed(CreateOrder::class, CreateOrder::shape(), CreateOrder::create(...), OrderCreated::class),
+        );
+        $seen = [];
+        $peek = static function (string $name) use (&$seen): ClosureMiddleware {
+            return new ClosureMiddleware($name, static function (Context $context, \Closure $next) use (&$seen, $name): Result {
+                $seen[$name] = Current::requestObject($context);
+
+                return $next($context);
+            });
+        };
+        $builder = (new PipelineBuilder())
+            ->useAt($peek('BeforeDecoding'), PipelineStage::Validate, Placement::Beginning)
+            ->useAt($peek('AfterDecoding'), PipelineStage::Validate)
+            ->useAt($peek('Authorize'), PipelineStage::Authorize);
+        $invoker = new Invoker($registry, $builder);
+        self::assertSame('{"id":"o1","quantity":4}', $invoker->invoke(Context::create(), new Request('orders.create', '{"quantity":4}'))->payload);
+        self::assertNull($seen['Authorize'], 'Authorize runs before the payload is read');
+        self::assertNull($seen['BeforeDecoding'], 'app sorts before xihan.kernel.core at the Beginning of Validate');
+        self::assertEquals(new CreateOrder(4), $seen['AfterDecoding']);
+
+        // 解码失败时后面的中间件不执行
+        $seen = [];
+        $invalid = $invoker->invoke(Context::create(), new Request('orders.create', '{"quantity":"x"}'))->outcome->error();
+        self::assertSame(['id' => 'orders.create', 'reason' => '$.quantity'], $invalid?->details);
+        self::assertSame(['Authorize', 'BeforeDecoding'], array_keys($seen));
+
+        // 类型化调用跳过解码：请求对象就是调用方给的
+        $seen = [];
+        $invoker->invokeTyped(Context::create(), 'orders.create', new CreateOrder(7), OrderCreated::class);
+        /** @var array<string, mixed> $seen 由中间件经引用写入 */
+        self::assertEquals(new CreateOrder(7), $seen['Authorize'] ?? null);
+    }
+
+    public function testOnlyExceptionsAfterTheObserveStepAreTranslated(): void
+    {
+        $registry = new Registry();
+        $registry->add(new Contract('orders.get'), static fn (Context $context, array $request): Result => Result::ok([]));
+        $crash = static fn (string $name): ClosureMiddleware => new ClosureMiddleware(
+            $name,
+            static fn (Context $context, \Closure $next): Result => throw new \RuntimeException($name),
+        );
+        $outside = [
+            'ingress' => (new PipelineBuilder())->useAt($crash('Ingress'), PipelineStage::Ingress),
+            'observe beginning, owner before the kernel' => (new PipelineBuilder())
+                ->useAt($crash('Early'), PipelineStage::Observe, Placement::Beginning, 'app'),
+        ];
+        foreach ($outside as $name => $builder) {
+            try {
+                (new Invoker($registry, $builder))->invoke(Context::create(), new Request('orders.get'));
+                self::fail(sprintf('%s: exceptions before the Observe step reach the caller', $name));
+            } catch (\RuntimeException $exception) {
+                self::assertNotSame('', $exception->getMessage(), $name);
+            }
+        }
+        $inside = [
+            'observe beginning, owner after the kernel' => (new PipelineBuilder())
+                ->useAt($crash('Late'), PipelineStage::Observe, Placement::Beginning, 'zeta.plugin'),
+            'observe end' => (new PipelineBuilder())->useAt($crash('End'), PipelineStage::Observe),
+        ];
+        foreach ($inside as $name => $builder) {
+            $error = (new Invoker($registry, $builder))->invoke(Context::create(), new Request('orders.get'))->outcome->error();
+            self::assertSame('kernel.invocation.unhandled_exception', $error?->messageKey, $name);
+        }
+        // 传入的构建器不变：内置步骤登记在副本上
+        $builder = new PipelineBuilder();
+        new Invoker($registry, $builder);
+        self::assertSame('', $builder->dump());
+        try {
+            new Invoker($registry, (new PipelineBuilder())->useAt(
+                new ClosureMiddleware(Invoker::DEADLINE_MIDDLEWARE, static fn (Context $context, \Closure $next): Result => $next($context)),
+                PipelineStage::Resilience,
+            ));
+            self::fail('a middleware with the name of a built-in step is a duplicate');
+        } catch (ConfigurationException $exception) {
+            self::assertSame(PipelineBuilder::ERROR_CODE_REGISTRATION, $exception->errorCode());
+        }
     }
 
     public function testThrownExceptionsBecomeUnexpectedErrors(): void
@@ -382,17 +488,19 @@ final class InvokerTest extends TestCase
 
     public function testCodecTypesMustExist(): void
     {
-        $decode = static fn (array $json): Result => Result::ok(new CreateOrder(1));
+        $create = static fn (mixed $value): CreateOrder => new CreateOrder(1);
         foreach ([['Missing\\Type', OrderCreated::class], [CreateOrder::class, 'Missing\\Type']] as [$request, $response]) {
             try {
                 // @phpstan-ignore argument.type
-                Codec::typed($request, $decode, $response);
+                Codec::typed($request, CreateOrder::shape(), $create, $response);
                 self::fail('unknown types must be rejected');
             } catch (InvalidArgumentException) {
                 $this->addToAssertionCount(1);
             }
         }
-        self::assertSame('array', Codec::typed(CreateOrder::class, $decode, 'array')->responseType);
+        self::assertSame('array', Codec::typed(CreateOrder::class, CreateOrder::shape(), $create, 'array')->responseType);
+        $this->expectException(InvalidArgumentException::class);
+        Codec::typed(CreateOrder::class, Shape::listOf(Shape::int32()), $create, 'array');
     }
 
     private static function invoker(?PipelineBuilder $builder): Invoker
@@ -407,7 +515,7 @@ final class InvokerTest extends TestCase
 
                 return Result::ok(new OrderCreated('o-' . $context->correlation(), $request->quantity));
             },
-            Codec::typed(CreateOrder::class, CreateOrder::decode(...), OrderCreated::class),
+            Codec::typed(CreateOrder::class, CreateOrder::shape(), CreateOrder::create(...), OrderCreated::class),
             new Schema('{}', '{}'),
         );
 

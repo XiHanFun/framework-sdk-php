@@ -40,7 +40,7 @@ final class OperationErrors
     /** 载荷不合法的消息键，参数 id、reason。 */
     public const string MESSAGE_INVALID_PAYLOAD = KernelMessages::OPERATION_INVALID_PAYLOAD;
 
-    /** 类型不符的消息键，参数 id、expected、actual。 */
+    /** 类型不符的消息键，参数 id。 */
     public const string MESSAGE_TYPE_MISMATCH = KernelMessages::OPERATION_TYPE_MISMATCH;
 
     /** 重复登记的消息键，参数 id、owner。 */
@@ -78,15 +78,11 @@ final class OperationErrors
     }
 
     /**
-     * 类型化调用的类型与登记不符：KERNEL_VALIDATION_002；expected / actual 是 PHP 的类型名，只给人看。
+     * 类型化调用的请求或响应类型与登记不符：KERNEL_VALIDATION_002，只带 id（ADR-0236：实现语言的类型名各语言写不出同样的参数）。
      */
-    public static function typeMismatch(string $id, string $expected, string $actual): Error
+    public static function typeMismatch(string $id): Error
     {
-        return Error::validation(
-            self::TYPE_MISMATCH,
-            self::MESSAGE_TYPE_MISMATCH,
-            ['id' => $id, 'expected' => $expected, 'actual' => $actual],
-        );
+        return Error::validation(self::TYPE_MISMATCH, self::MESSAGE_TYPE_MISMATCH, ['id' => $id]);
     }
 
     /**

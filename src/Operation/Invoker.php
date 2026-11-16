@@ -5,30 +5,75 @@ declare(strict_types=1);
 namespace XiHan\Framework\Operation;
 
 use XiHan\Framework\Invocation\Context;
+use XiHan\Framework\Pipeline\ClosureMiddleware;
 use XiHan\Framework\Pipeline\PipelineBuilder;
+use XiHan\Framework\Pipeline\Placement;
 use XiHan\Framework\Primitives\ConfigurationException;
+use XiHan\Framework\Primitives\PipelineStage;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Unit;
 
 /**
  * 让操作经过完整管道执行的调用器（RFC-0011 IOperationInvoker）。
  *
- * 管道的终点在 handle 阶段分派当前操作。描述、请求与响应载荷在进入管道前写进上下文的对象袋，
- * 调用返回时还原成进入前的值：同一个上下文上的连续或嵌套调用互不干扰。
+ * 调用器带三个内置步骤，位置与 .NET 的内置中间件相同（RFC-0011 规则 10，ADR-0236）：都按归属 xihan.kernel.core 放在
+ * 所在阶段的 Beginning，与同位置的其他中间件按 RFC-0004 的规则排序（归属的序数序、同归属按登记顺序）。
+ *
+ * - Observe 阶段的 ObserveMiddleware：把排在它之后的中间件与处理函数抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5）；
+ *   排在它之前的（Ingress 阶段，或 Observe 阶段 Beginning 上归属排在 xihan.kernel.core 之前的，如 app）抛出的异常原样
+ *   交给调用方。
+ * - Resilience 阶段的 DeadlineMiddleware：进入时截止时间已到即以 KERNEL_TIMEOUT_001 结束，后面的不执行；不核对取消。
+ * - Validate 阶段的 ValidationMiddleware：原始调用在这里把载荷解码成请求，失败即以 KERNEL_VALIDATION_001 结束；
+ *   类型化调用跳过。
+ *
+ * 管道的终点在 handle 阶段之后分派当前操作。描述、请求与响应在进入管道前写进上下文的对象袋，调用返回时还原成进入前的值：
+ * 同一个上下文上的连续或嵌套调用互不干扰。
  */
 final class Invoker
 {
+    /** 内置步骤的归属：内核清单 ID。 */
+    public const string KERNEL_OWNER = 'xihan.kernel.core';
+
+    /** Observe 阶段的异常翻译步骤的中间件名。 */
+    public const string OBSERVE_MIDDLEWARE = 'ObserveMiddleware';
+
+    /** Resilience 阶段的截止时间步骤的中间件名。 */
+    public const string DEADLINE_MIDDLEWARE = 'DeadlineMiddleware';
+
+    /** Validate 阶段的解码步骤的中间件名。 */
+    public const string VALIDATION_MIDDLEWARE = 'ValidationMiddleware';
+
     /** @var \Closure(Context): Result<Unit> */
     private readonly \Closure $step;
 
     /**
-     * 用登记表与管道构建调用器。
+     * 用登记表与管道构建调用器；传入的构建器不变，内置步骤登记在它的副本上。
      *
-     * @throws ConfigurationException 管道的排序或约束不合法（KERNEL_PIPELINE_00x）
+     * @throws ConfigurationException 管道的排序或约束不合法（KERNEL_PIPELINE_00x），或已登记了与内置步骤同名的中间件
      */
     public function __construct(private readonly Registry $registry, ?PipelineBuilder $builder = null)
     {
-        $this->step = ($builder ?? new PipelineBuilder())->build(self::dispatch(...));
+        $pipeline = $builder === null ? new PipelineBuilder() : clone $builder;
+        $pipeline
+            ->useAt(
+                new ClosureMiddleware(self::OBSERVE_MIDDLEWARE, self::observe(...)),
+                PipelineStage::Observe,
+                Placement::Beginning,
+                self::KERNEL_OWNER,
+            )
+            ->useAt(
+                new ClosureMiddleware(self::DEADLINE_MIDDLEWARE, self::deadline(...)),
+                PipelineStage::Resilience,
+                Placement::Beginning,
+                self::KERNEL_OWNER,
+            )
+            ->useAt(
+                new ClosureMiddleware(self::VALIDATION_MIDDLEWARE, self::validate(...)),
+                PipelineStage::Validate,
+                Placement::Beginning,
+                self::KERNEL_OWNER,
+            );
+        $this->step = $pipeline->build(self::dispatch(...));
     }
 
     /**
@@ -42,9 +87,10 @@ final class Invoker
     /**
      * 执行一个 XGI 请求：未登记返回 KERNEL_NOTFOUND_001（不进管道）；否则经完整管道执行。
      *
-     * 调用开始时截止时间已过返回 KERNEL_TIMEOUT_001 + kernel.invocation.deadline_before_start，管道不执行；
-     * 管道以成功结束而没有响应载荷时返回 KERNEL_UNEXPECTED_001 + kernel.operation.no_response（规则 9）；
-     * 管道里抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5）。
+     * 截止时间、解码与异常按内置步骤处理（见类说明）；管道以成功结束而没有响应载荷时返回
+     * KERNEL_UNEXPECTED_001 + kernel.operation.no_response（规则 9）。
+     *
+     * @throws \Throwable 排在 Observe 内置步骤之前的中间件抛出的异常原样抛出
      */
     public function invoke(Context $context, Request $request): Response
     {
@@ -56,10 +102,11 @@ final class Invoker
         return self::scoped($context, [
             Current::DESCRIPTOR_KEY => $descriptor,
             Current::REQUEST_KEY => $request,
+            Current::REQUEST_OBJECT_KEY => null,
             Current::RESPONSE_KEY => null,
             Current::TERMINAL_KEY => null,
         ], function () use ($context, $request): Response {
-            $outcome = $this->run($context);
+            $outcome = ($this->step)($context);
             if ($outcome->isFailed()) {
                 return new Response($outcome, null);
             }
@@ -72,14 +119,16 @@ final class Invoker
     }
 
     /**
-     * 类型化入口：不经 JSON，直接以请求对象经完整管道执行。
+     * 类型化入口：不经 JSON，直接以请求对象经完整管道执行；Validate 阶段的解码步骤跳过。
      *
-     * 请求不是登记的请求类型、或期望的响应类型与登记不符时返回 KERNEL_VALIDATION_002；未登记返回 KERNEL_NOTFOUND_001；
-     * 截止时间已过、没有产出响应与抛出的异常同 invoke()。
+     * 进入管道前依次核对：未登记返回 KERNEL_NOTFOUND_001；请求不是登记的请求类型、或期望的响应类型与登记不符返回
+     * KERNEL_VALIDATION_002。截止时间、没有产出响应与抛出的异常同 invoke()。
      *
      * @param string $responseType 期望的响应类型名，与登记的 Codec 一致（Codec::json() 为 mixed）
      *
      * @return Result<mixed>
+     *
+     * @throws \Throwable 排在 Observe 内置步骤之前的中间件抛出的异常原样抛出
      */
     public function invokeTyped(Context $context, string $id, mixed $request, string $responseType): Result
     {
@@ -89,11 +138,7 @@ final class Invoker
         }
         $codec = $descriptor->codec;
         if (!$codec->acceptsRequest($request) || $codec->responseType !== $responseType) {
-            return Result::fail(OperationErrors::typeMismatch(
-                $id,
-                $codec->requestType . ' -> ' . $codec->responseType,
-                get_debug_type($request) . ' -> ' . $responseType,
-            ));
+            return Result::fail(OperationErrors::typeMismatch($id));
         }
         $result = null;
         $terminal = static function (Context $context) use ($descriptor, $request, &$result): Result {
@@ -104,9 +149,10 @@ final class Invoker
         $outcome = self::scoped($context, [
             Current::DESCRIPTOR_KEY => $descriptor,
             Current::REQUEST_KEY => new Request($id),
+            Current::REQUEST_OBJECT_KEY => $request,
             Current::RESPONSE_KEY => null,
             Current::TERMINAL_KEY => $terminal,
-        ], fn (): Result => $this->run($context));
+        ], fn (): Result => ($this->step)($context));
         $error = $outcome->error();
         if ($error !== null) {
             return Result::fail($error);
@@ -117,27 +163,65 @@ final class Invoker
     }
 
     /**
-     * 执行管道；截止时间已过时不执行，抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5），不传给调用方。
+     * Observe 阶段的内置步骤：把下游抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5），不传给调用方。
+     *
+     * 要记日志的应用把自己的中间件放在它之后（Observe 阶段的 End 或更晚的阶段），异常先经过它再到这里。
+     *
+     * @param \Closure(Context): Result<Unit> $next
      *
      * @return Result<Unit>
      */
-    private function run(Context $context): Result
+    private static function observe(Context $context, \Closure $next): Result
     {
-        // 本 SDK 没有截止时间中间件：由调用器在第一个中间件之前按时钟核对，已到即结束、管道不执行（RFC-0011 规则 10）
-        if ($context->isExpired($context->clock()->now())) {
-            return Result::fail(OperationErrors::deadlineBeforeStart());
-        }
         try {
-            return ($this->step)($context);
+            return $next($context);
         } catch (\Throwable $exception) {
-            // 宿主由 Observe 阶段翻译，SDK 没有内置的 Observe 中间件，在调用器的边界上翻译；要记日志的应用在
-            // Observe 阶段放自己的中间件，异常先经过它再到这里
             return Result::fail(OperationErrors::unhandledException($exception));
         }
     }
 
     /**
-     * 管道的终点：类型化调用执行它带来的终点，否则执行当前操作并把响应载荷写回上下文。
+     * Resilience 阶段的内置步骤：进入时截止时间已到即结束，后面的中间件与处理函数不执行（规则 10）。
+     *
+     * @param \Closure(Context): Result<Unit> $next
+     *
+     * @return Result<Unit>
+     */
+    private static function deadline(Context $context, \Closure $next): Result
+    {
+        if ($context->isExpired($context->clock()->now())) {
+            return Result::fail(OperationErrors::deadlineBeforeStart());
+        }
+
+        return $next($context);
+    }
+
+    /**
+     * Validate 阶段的内置步骤：原始调用把载荷解码成请求写进对象袋，失败即结束；类型化调用跳过（规则 2、10）。
+     *
+     * @param \Closure(Context): Result<Unit> $next
+     *
+     * @return Result<Unit>
+     */
+    private static function validate(Context $context, \Closure $next): Result
+    {
+        $descriptor = Current::descriptor($context);
+        $request = Current::request($context);
+        if ($descriptor === null || $request === null || $context->items()->has(Current::TERMINAL_KEY)) {
+            return $next($context);
+        }
+        $decoded = $descriptor->codec->decode($descriptor->contract->id, $request->payload);
+        $error = $decoded->error();
+        if ($error !== null) {
+            return Result::fail($error);
+        }
+        $context->items()->set(Current::REQUEST_OBJECT_KEY, $decoded->valueOrThrow());
+
+        return $next($context);
+    }
+
+    /**
+     * 管道的终点：类型化调用执行它带来的终点，否则以解码后的请求执行当前操作并把响应载荷写回上下文。
      *
      * @return Result<Unit>
      */
@@ -149,10 +233,14 @@ final class Invoker
             return $terminal($context);
         }
         $descriptor = Current::descriptor($context);
-        if ($descriptor === null) {
-            return Result::fail(OperationErrors::notFound(Current::request($context)->id ?? ''));
+        $request = Current::request($context);
+        if ($descriptor === null || $request === null) {
+            return Result::fail(OperationErrors::notFound($request->id ?? ''));
         }
-        $response = $descriptor->execute($context, Current::request($context)->payload ?? '');
+        // 解码步骤已把请求写进对象袋；它不在时（对象袋被下游改动）按载荷再解码一次
+        $response = $context->items()->has(Current::REQUEST_OBJECT_KEY)
+            ? $descriptor->respond($context, Current::requestObject($context))
+            : $descriptor->execute($context, $request->payload);
         if ($response->outcome->isOk() && $response->payload !== null) {
             Current::setResponsePayload($context, $response->payload);
         }

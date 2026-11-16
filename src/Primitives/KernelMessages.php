@@ -36,7 +36,7 @@ final class KernelMessages
     /** 载荷不合法（KERNEL_VALIDATION_001）；参数 id、reason。 */
     public const string OPERATION_INVALID_PAYLOAD = 'kernel.operation.invalid_payload';
 
-    /** 类型化调用的类型与登记不符（KERNEL_VALIDATION_002）；参数 id、expected、actual。 */
+    /** 类型化调用的类型与登记不符（KERNEL_VALIDATION_002）；参数 id（ADR-0236 去掉了实现语言的类型名）。 */
     public const string OPERATION_TYPE_MISMATCH = 'kernel.operation.type_mismatch';
 
     /** 管道以成功结束而没有响应（KERNEL_UNEXPECTED_001）；参数 id。 */
@@ -84,7 +84,8 @@ final class KernelMessages
         self::UNHANDLED_EXCEPTION => 'An unhandled exception occurred during the invocation.',
         self::OPERATION_UNKNOWN => "Operation '{id}' is not registered.",
         self::OPERATION_INVALID_PAYLOAD => "The payload of operation '{id}' is not valid: {reason}",
-        self::OPERATION_TYPE_MISMATCH => "Operation '{id}' handles '{expected}', but '{actual}' was supplied.",
+        self::OPERATION_TYPE_MISMATCH => "Operation '{id}' was invoked with request or response types that do not "
+            . 'match its registration.',
         self::OPERATION_NO_RESPONSE => "Operation '{id}' completed without producing a response.",
         self::OPERATION_DUPLICATE => "Operation '{id}' is already registered by '{owner}'.",
         self::OPERATION_REGISTRY_FULL => 'The operation registry has reached its capacity of {capacity}.',
