@@ -61,7 +61,7 @@ final class InvokerTest extends TestCase
         self::assertSame(['id' => 'orders.missing'], $missing->details);
 
         $reasons = [
-            'null' => 'the payload is null',
+            'null' => '$',
             '[1]' => '$',
             '{' => '$',
             '"x"' => '$',
