@@ -73,6 +73,61 @@ final class Values
         return get_debug_type($value);
     }
 
+    /**
+     * 按 UTF-16 码元的序数比较两个字符串（.NET 的 StringComparer.Ordinal）。
+     *
+     * 基本多文种平面内 UTF-8 的字节序与 UTF-16 的码元序相同；平面以外的字符在 UTF-16 里是代理对（0xD800–0xDFFF），
+     * 排在 U+E000–U+FFFF 之前，字节序会排在它们之后，所以含非 ASCII 时逐码元比较。不是合法 UTF-8 时按字节比较。
+     */
+    public static function compareOrdinal(string $left, string $right): int
+    {
+        if (preg_match('/[\x80-\xFF]/', $left . $right) !== 1) {
+            return strcmp($left, $right) <=> 0;
+        }
+        $leftUnits = self::utf16Units($left);
+        $rightUnits = self::utf16Units($right);
+        if ($leftUnits === null || $rightUnits === null) {
+            return strcmp($left, $right) <=> 0;
+        }
+        $length = min(count($leftUnits), count($rightUnits));
+        for ($index = 0; $index < $length; $index++) {
+            if ($leftUnits[$index] !== $rightUnits[$index]) {
+                return $leftUnits[$index] <=> $rightUnits[$index];
+            }
+        }
+
+        return count($leftUnits) <=> count($rightUnits);
+    }
+
+    /**
+     * @return list<int>|null 不是合法 UTF-8 时为 null
+     */
+    private static function utf16Units(string $text): ?array
+    {
+        $characters = preg_split('//u', $text, -1, PREG_SPLIT_NO_EMPTY);
+        if ($characters === false) {
+            return null;
+        }
+        $units = [];
+        foreach ($characters as $character) {
+            // 合法的 UTF-8 字符是 1–4 个字节，首字节的高位决定长度
+            $length = strlen($character);
+            $point = ord($character[0]) & [1 => 0x7F, 2 => 0x1F, 3 => 0x0F, 4 => 0x07][$length];
+            for ($index = 1; $index < $length; $index++) {
+                $point = ($point << 6) | (ord($character[$index]) & 0x3F);
+            }
+            if ($point < 0x10000) {
+                $units[] = $point;
+                continue;
+            }
+            $point -= 0x10000;
+            $units[] = 0xD800 + ($point >> 10);
+            $units[] = 0xDC00 + ($point & 0x3FF);
+        }
+
+        return $units;
+    }
+
     private static function isJsonAt(mixed $value, int $depth): bool
     {
         if ($depth > self::MAX_DEPTH) {

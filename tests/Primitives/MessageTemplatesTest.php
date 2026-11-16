@@ -101,9 +101,12 @@ final class MessageTemplatesTest extends TestCase
             [-2.5, '-2.5'],
             [0.0, '0'],
             [-0.0, '-0'],
-            [1e15, '1E+15'],
+            [1e15, '1000000000000000'],
+            [1e17, '1E+17'],
             [1.5e-5, '1.5E-05'],
-            [INF, '∞'],
+            [INF, 'Infinity'],
+            [-INF, '-Infinity'],
+            [NAN, 'NaN'],
         ];
         foreach ($cases as [$value, $expected]) {
             self::assertSame($expected, MessageTemplate::format('{f}', ['f' => $value]), var_export($value, true));

@@ -28,8 +28,9 @@ final class Numbers
     }
 
     /**
-     * 浮点数的文本形式：1e-4 ≤ |x| < 1e15 或 x = 0 时写能往返的最短十进制、不用指数，整数值不带小数点；
-     * 范围之外按 .NET 的往返形式写指数（规范不作规定）。
+     * 浮点数的文本形式（RFC-0010「模板」，ADR-0235）：1e-4 ≤ |x| < 1e17 或 x = 0 时写能往返的最短十进制、不用指数，
+     * 整数值不带小数点；范围之外写最短往返的有效数字加指数（E、总写的符号、至少两位指数，如 1E+17、9.9E-05）；
+     * 负零写 -0，非数与无穷写 NaN、Infinity、-Infinity。
      */
     public static function plain(float $value): string
     {
@@ -37,7 +38,7 @@ final class Numbers
             return 'NaN';
         }
         if (is_infinite($value)) {
-            return $value > 0 ? '∞' : '-∞';
+            return $value > 0 ? 'Infinity' : '-Infinity';
         }
         $sign = $value < 0 || ($value === 0.0 && fdiv(1.0, $value) < 0) ? '-' : '';
         $magnitude = abs($value);
@@ -45,7 +46,7 @@ final class Numbers
             return $sign . '0';
         }
         [$digits, $exponent] = self::shortest($magnitude);
-        if ($magnitude < 1e-4 || $magnitude >= 1e15) {
+        if ($magnitude < 1e-4 || $magnitude >= 1e17) {
             $mantissa = strlen($digits) > 1 ? $digits[0] . '.' . substr($digits, 1) : $digits;
 
             $power = str_pad((string) abs($exponent), 2, '0', STR_PAD_LEFT);

@@ -43,14 +43,9 @@ final class KernelMessagesTest extends TestCase
             self::assertSame($message['template'], KernelMessages::englishTemplate($key), $key);
             self::assertSame($message['arguments'], MessageTemplate::placeholdersOf($message['template']), $key);
         }
-        // RFC-0011 规则 5 要翻译异常，共用表还没有这一行；它的模板取自 .NET，等向量补上后就会在上面逐字核对
-        $notYetShared = [KernelMessages::UNHANDLED_EXCEPTION];
         foreach (array_keys(KernelMessages::englishTemplates()) as $key) {
-            if (!in_array($key, $notYetShared, true)) {
-                self::assertContains($key, $keys, sprintf('%s is not in the shared table', $key));
-            }
+            self::assertContains($key, $keys, sprintf('%s is not in the shared table', $key));
         }
-        self::assertNotContains(KernelMessages::UNHANDLED_EXCEPTION, $keys, 'the shared table now lists it; drop the exception');
     }
 
     public function testTheSdkRaisesTheSharedErrors(): void
@@ -124,6 +119,10 @@ final class KernelMessagesTest extends TestCase
             KernelMessages::OPERATION_NO_RESPONSE => static fn (): Error => self::failure(
                 $silent->invoke(Context::create(), new Request('orders.create'))->outcome,
             ),
+            KernelMessages::UNHANDLED_EXCEPTION => static fn (): Error => self::failure((new Invoker($registry, (new PipelineBuilder())->useAt(
+                new ClosureMiddleware('Crash', static fn (Context $context, \Closure $next): Result => throw new \RuntimeException('boom')),
+                PipelineStage::Authorize,
+            )))->invoke(Context::create(), new Request('orders.create'))->outcome),
             KernelMessages::OPERATION_DUPLICATE => static function () use ($registry, $handler): Error {
                 try {
                     $registry->add(new Contract('orders.create'), $handler);

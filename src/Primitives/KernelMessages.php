@@ -24,11 +24,7 @@ final class KernelMessages
     /** 截止时间之前调用方取消（KERNEL_CANCELLED_001）；参数无。 */
     public const string CANCELLED = 'kernel.invocation.cancelled';
 
-    /**
-     * 调用期间抛出了异常（KERNEL_UNEXPECTED_001）；参数无。
-     *
-     * RFC-0011 规则 5 要求翻译异常，但共用表与向量还没有这一行：键与模板取自 .NET 的 Localization/en-US.json。
-     */
+    /** 处理器或中间件抛出了异常（KERNEL_UNEXPECTED_001，RFC-0011 规则 5、10）；参数无，框架异常的错误在 inner。 */
     public const string UNHANDLED_EXCEPTION = 'kernel.invocation.unhandled_exception';
 
     /** 操作未登记（KERNEL_NOTFOUND_001）；参数 id。 */

@@ -142,7 +142,9 @@ final class MessageTemplate
     }
 
     /**
-     * 在没有文案时描述一个消息：没有参数时是键本身，否则 `键 (name=value, ...)`，按参数给出的顺序，值按文本形式。
+     * 在没有文案时描述一个消息：没有参数时是键本身，否则 `键 (name=value, ...)`，值按文本形式。
+     *
+     * 参数按名字的序数顺序（逐个 UTF-16 码元比较）排列（RFC-0010，ADR-0235），各语言写出同样的文本。
      *
      * @param array<array-key, mixed>|null $arguments
      */
@@ -151,6 +153,10 @@ final class MessageTemplate
         if ($arguments === null || $arguments === []) {
             return $key;
         }
+        uksort($arguments, static fn (int|string $left, int|string $right): int => Values::compareOrdinal(
+            (string) $left,
+            (string) $right,
+        ));
         $parts = [];
         foreach ($arguments as $name => $value) {
             $parts[] = $name . '=' . Values::text($value);

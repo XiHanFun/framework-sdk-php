@@ -63,12 +63,14 @@ final class MessagesTest extends TestCase
         self::assertSame('kernel.feature.start_failed', MessageTemplate::describe('kernel.feature.start_failed', []));
         self::assertSame('kernel.feature.start_failed', MessageTemplate::describe('kernel.feature.start_failed', null));
         self::assertSame(
-            'kernel.feature.start_failed (reason=y, id=x)',
+            'kernel.feature.start_failed (id=x, reason=y)',
             MessageTemplate::describe('kernel.feature.start_failed', ['reason' => 'y', 'id' => 'x']),
-            'arguments keep the order they were given in',
+            'arguments are ordered by name',
         );
-        self::assertSame('a.b (10=z, 0=x)', MessageTemplate::describe('a.b', [10 => 'z', 0 => 'x']));
-        self::assertSame('a.b (list=[1,2], none=)', MessageTemplate::describe('a.b', ['list' => [1, 2], 'none' => null]));
+        self::assertSame('a.b (0=x, 10=z, 2=y)', MessageTemplate::describe('a.b', [10 => 'z', 0 => 'x', 2 => 'y']));
+        self::assertSame('a.b (list=[1,2], none=)', MessageTemplate::describe('a.b', ['none' => null, 'list' => [1, 2]]));
+        // 序数比较按 UTF-16 码元：平面以外的字符（代理对）排在 U+FFFD 之前
+        self::assertSame("a.b (😀=1, \u{FFFD}=2)", MessageTemplate::describe('a.b', ["\u{FFFD}" => 2, '😀' => 1]));
     }
 
     public function testCatalogResolvesWithFallbackToEnglish(): void
