@@ -5,24 +5,33 @@ declare(strict_types=1);
 namespace XiHan\Framework\Primitives\Internal;
 
 /**
- * 原语层内部用的取值工具：判断 JSON 可表示性、把值写成文本。
+ * 原语层内部用的取值工具：判断 JSON 可表示性、值模型与值的文本形式（RFC-0010「模板」）。
+ *
+ * 值模型（ADR-0236）只有空、布尔、字符串、64 位有符号整数、双精度浮点、数组与对象七种，PHP 的值按下面归入：
+ *
+ * - null、bool、string、int（PHP 的 int 就是 64 位）、float 原样。
+ * - 数组：列表（array_is_list，含空数组）是数组，其余是对象，键写成字符串；stdClass 是对象。
+ * - 模型之外的值写成 PHP 的文本：BackedEnum 取值的文本，UnitEnum 取名字，Stringable 取 `(string)`，
+ *   DateTimeInterface 取 ATOM 格式（`2026-11-16T10:00:00+08:00`），JsonSerializable 取 jsonSerialize() 再归入，
+ *   其余对象写类型名。它们不跨语言，插件要跨语言格式化时先转成字符串。
  *
  * @internal 不属于公开 API，随时可能改变。
  */
 final class Values
 {
-    /** 线上编码用的 json_encode 选项：斜杠与非 ASCII 字符原样输出 */
-    public const int JSON_FLAGS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR;
-
     /** 判断可表示性时的最大嵌套深度，与 json_encode 的缺省深度一致，避免无界递归 */
     private const int MAX_DEPTH = 512;
+
+    /** 写成文本的数组与对象的最大层数，更深的容器写成 null */
+    private const int MAX_TEXT_DEPTH = 64;
 
     private function __construct()
     {
     }
 
     /**
-     * 判断值是否 JSON 可表示：null、布尔、整数、有限浮点数、UTF-8 字符串、由它们组成的数组或 stdClass，或 JsonSerializable。
+     * 判断值是否 JSON 可表示：null、布尔、整数、浮点数（非有限的写成字符串）、UTF-8 字符串、由它们组成的数组或 stdClass，
+     * 或 JsonSerializable。
      */
     public static function isJson(mixed $value): bool
     {
@@ -30,13 +39,41 @@ final class Values
     }
 
     /**
-     * 把值写成面向人的文本（RFC-0010「模板」的值的文本形式）。
-     *
-     * 字符串原样，整数十进制，布尔写 true / false，null 写空串，浮点见 Numbers::plain；
-     * 规范不作规定的其余值：枚举取值或名字，Stringable 取文本，数组与 JsonSerializable 按 JSON，其他写类型名。
+     * 把值归到值模型：结果是 null、bool、string、int、float、数组或 stdClass。
      */
-    public static function text(mixed $value): string
+    public static function model(mixed $value, int $depth = 0): mixed
     {
+        if ($value === null || is_scalar($value) || is_array($value) || $value instanceof \stdClass) {
+            return $value;
+        }
+        if ($value instanceof \BackedEnum) {
+            return (string) $value->value;
+        }
+        if ($value instanceof \UnitEnum) {
+            return $value->name;
+        }
+        if ($value instanceof \Stringable) {
+            return (string) $value;
+        }
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format(\DateTimeInterface::ATOM);
+        }
+        if ($value instanceof \JsonSerializable && $depth < self::MAX_TEXT_DEPTH) {
+            return self::model($value->jsonSerialize(), $depth + 1);
+        }
+
+        return get_debug_type($value);
+    }
+
+    /**
+     * 把值写成无格式的文本（RFC-0010「模板」的值的文本形式，`Describe` 同样适用）。
+     *
+     * 字符串原样，整数十进制，布尔写 true / false，null 写空串，浮点见 Numbers::plain，数组与对象写成紧凑的 JSON
+     * （对象成员按名字的 UTF-16 码元序）。`$decimal` 与 `$group` 是区域的小数点与分组符，只用在顶层的浮点上。
+     */
+    public static function text(mixed $value, string $decimal = '.', string $group = ','): string
+    {
+        $value = self::model($value);
         if (is_string($value)) {
             return $value;
         }
@@ -50,27 +87,18 @@ final class Values
             return (string) $value;
         }
         if (is_float($value)) {
-            return Numbers::plain($value);
-        }
-        if ($value instanceof \BackedEnum) {
-            return (string) $value->value;
-        }
-        if ($value instanceof \UnitEnum) {
-            return $value->name;
-        }
-        if ($value instanceof \Stringable) {
-            return (string) $value;
-        }
-        if (is_array($value) || $value instanceof \JsonSerializable || $value instanceof \stdClass) {
-            try {
-                return json_encode($value, self::JSON_FLAGS);
-            } catch (\JsonException) {
-                // 写成文本只为日志与描述，编码不了时退到类型名，让调用方仍能看到是什么值
-                return get_debug_type($value);
-            }
+            return self::localize(Numbers::plain($value), $decimal, $group);
         }
 
-        return get_debug_type($value);
+        return self::json($value, 1);
+    }
+
+    /**
+     * 把不变文化的数字文本换成区域的小数点与分组符。
+     */
+    public static function localize(string $text, string $decimal, string $group): string
+    {
+        return $decimal === '.' && $group === ',' ? $text : strtr($text, ['.' => $decimal, ',' => $group]);
     }
 
     /**
@@ -84,19 +112,66 @@ final class Values
         if (preg_match('/[\x80-\xFF]/', $left . $right) !== 1) {
             return strcmp($left, $right) <=> 0;
         }
-        $leftUnits = self::utf16Units($left);
-        $rightUnits = self::utf16Units($right);
-        if ($leftUnits === null || $rightUnits === null) {
-            return strcmp($left, $right) <=> 0;
+
+        return strcmp(self::ordinalKey($left), self::ordinalKey($right)) <=> 0;
+    }
+
+    /**
+     * 返回按字节比较即是 UTF-16 码元序的键：码元按大端写成两个字节；不是合法 UTF-8 时每个字节当作一个码元。
+     */
+    private static function ordinalKey(string $text): string
+    {
+        $units = self::utf16Units($text) ?? array_map(ord(...), str_split($text));
+
+        return $units === [] ? '' : pack('n*', ...$units);
+    }
+
+    /**
+     * 写成紧凑的 JSON：没有空白，对象成员按名字的序数顺序（同名保持原顺序），数字的写法同顶层但不随区域，
+     * 超过 64 层的容器写成 null。
+     */
+    private static function json(mixed $value, int $depth): string
+    {
+        $value = self::model($value);
+        if ($value === null) {
+            return 'null';
         }
-        $length = min(count($leftUnits), count($rightUnits));
-        for ($index = 0; $index < $length; $index++) {
-            if ($leftUnits[$index] !== $rightUnits[$index]) {
-                return $leftUnits[$index] <=> $rightUnits[$index];
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+        if (is_string($value)) {
+            return Json::string($value);
+        }
+        if (is_int($value)) {
+            return (string) $value;
+        }
+        if (is_float($value)) {
+            return Numbers::plain($value);
+        }
+        if ($depth > self::MAX_TEXT_DEPTH || !(is_array($value) || $value instanceof \stdClass)) {
+            return 'null';
+        }
+        if (is_array($value) && array_is_list($value)) {
+            $items = [];
+            foreach ($value as $item) {
+                $items[] = self::json($item, $depth + 1);
             }
+
+            return '[' . implode(',', $items) . ']';
+        }
+        $members = [];
+        foreach ($value instanceof \stdClass ? get_object_vars($value) : $value as $name => $item) {
+            $name = (string) $name;
+            $members[] = [self::ordinalKey($name), $name, $item];
+        }
+        // usort 是稳定排序：同名成员（只可能来自不同的整数与字符串键）保持原顺序
+        usort($members, static fn (array $left, array $right): int => strcmp($left[0], $right[0]));
+        $parts = [];
+        foreach ($members as [, $name, $item]) {
+            $parts[] = Json::string($name) . ':' . self::json($item, $depth + 1);
         }
 
-        return count($leftUnits) <=> count($rightUnits);
+        return '{' . implode(',', $parts) . '}';
     }
 
     /**
@@ -133,11 +208,8 @@ final class Values
         if ($depth > self::MAX_DEPTH) {
             return false;
         }
-        if ($value === null || is_bool($value) || is_int($value) || $value instanceof \JsonSerializable) {
+        if ($value === null || is_scalar($value) && !is_string($value) || $value instanceof \JsonSerializable) {
             return true;
-        }
-        if (is_float($value)) {
-            return is_finite($value);
         }
         if (is_string($value)) {
             return preg_match('//u', $value) === 1;

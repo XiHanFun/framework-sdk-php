@@ -50,11 +50,14 @@ final class Vectors
     }
 
     /**
-     * 把 JSON 值写成规范文本：对象成员按名字排序，用于按 JSON 值比较（不比较成员顺序与空白）。
+     * 把 JSON 值写成规范文本：对象成员按名字排序，用于按 JSON 值比较（不比较成员顺序与空白，整数与浮点不相等）。
      */
     public static function canonicalJson(mixed $value): string
     {
-        return json_encode(self::sorted(json_decode(json_encode($value, JSON_THROW_ON_ERROR), false)), JSON_THROW_ON_ERROR);
+        // 整数与浮点按值模型区分（ADR-0236）：2.0 与 2 不相等，负零保留
+        $flags = JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR;
+
+        return json_encode(self::sorted(json_decode(json_encode($value, $flags), false)), $flags);
     }
 
     private static function sorted(mixed $value): mixed

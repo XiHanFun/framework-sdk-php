@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Primitives;
 
+use XiHan\Framework\Primitives\Internal\Json;
 use XiHan\Framework\Primitives\Internal\Values;
 use XiHan\Framework\Primitives\Internal\Wire;
 
@@ -344,7 +345,18 @@ final readonly class Result implements \JsonSerializable, \Stringable
             return ['ok' => false, 'error' => $this->error];
         }
 
-        return $this->value === Unit::Value ? ['ok' => true] : ['ok' => true, 'value' => $this->value];
+        // 非有限的浮点写成字符串（RFC-0001「Result」，ADR-0236）；对象与数组保持原来的形态
+        return $this->value === Unit::Value ? ['ok' => true] : ['ok' => true, 'value' => Json::writable($this->value)];
+    }
+
+    /**
+     * 写成线上编码的 JSON 文本：整数值的浮点带小数点、非有限的浮点写成字符串，对方按值模型读回同样的值（ADR-0236）。
+     *
+     * @throws \JsonException 值写不成 JSON
+     */
+    public function toJson(): string
+    {
+        return Json::encode($this);
     }
 
     /**

@@ -10,6 +10,7 @@ use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\FrameworkException;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\LocaleName;
 use XiHan\Framework\Primitives\MessageCatalog;
 use XiHan\Framework\Primitives\MessageScope;
@@ -65,7 +66,6 @@ final class ErrorTest extends TestCase
             'one-segment key' => static fn (): Error => Error::of('A_VALIDATION_001', 'orders'),
             'empty text' => static fn (): Error => Error::literal('A_VALIDATION_001', ''),
             'non-JSON details' => static fn (): Error => Error::of('A_VALIDATION_001', 'a.b', ['x' => new \DateTimeImmutable()]),
-            'infinite float' => static fn (): Error => Error::of('A_VALIDATION_001', 'a.b', ['x' => INF]),
             'invalid UTF-8' => static fn (): Error => Error::of('A_VALIDATION_001', 'a.b', ['x' => "\xff"]),
             'with bad code' => static fn (): Error => Error::literal('A_VALIDATION_001', 't')->withCode('x'),
             'with empty text' => static fn (): Error => Error::literal('A_VALIDATION_001', 't')->withText(''),
@@ -79,6 +79,20 @@ final class ErrorTest extends TestCase
                 self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode(), $name);
             }
         }
+    }
+
+    public function testDetailsWriteNumbersByTheValueModel(): void
+    {
+        // 非有限的浮点写成字符串，整数值的浮点带小数点（RFC-0001「Result」，ADR-0236）
+        $error = Error::of('A_VALIDATION_001', 'a.b', ['nan' => NAN, 'inf' => INF, 'neg' => -INF, 'two' => 2.0, 'n' => 2]);
+        self::assertSame(
+            '{"code":"A_VALIDATION_001","message":"a.b (inf=Infinity, n=2, nan=NaN, neg=-Infinity, two=2)",'
+            . '"messageKey":"a.b","details":{"nan":"NaN","inf":"Infinity","neg":"-Infinity","two":2.0,"n":2}}',
+            $error->toJson(),
+        );
+        $read = Error::fromJson($error->toJson());
+        self::assertSame(['nan' => 'NaN', 'inf' => 'Infinity', 'neg' => '-Infinity', 'two' => 2.0, 'n' => 2], $read->details);
+        self::assertSame('{"ok":true,"value":[2.0,-0.0,1.0e+17,"NaN"]}', Result::ok([2.0, -0.0, 1e17, NAN])->toJson());
     }
 
     public function testMessageKeysAllowUnderscoresInEverySegment(): void

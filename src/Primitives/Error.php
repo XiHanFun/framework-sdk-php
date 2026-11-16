@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Primitives;
 
+use XiHan\Framework\Primitives\Internal\Json;
 use XiHan\Framework\Primitives\Internal\Values;
 use XiHan\Framework\Primitives\Internal\Wire;
 
@@ -308,13 +309,24 @@ final readonly class Error implements \JsonSerializable, \Stringable
             $wire['messageKey'] = $this->messageKey;
         }
         if ($this->details !== []) {
-            $wire['details'] = (object) $this->details;
+            // 非有限的浮点写成字符串 NaN、Infinity、-Infinity（RFC-0001「Result」，ADR-0236）
+            $wire['details'] = Json::writable((object) $this->details);
         }
         if ($this->inner !== null) {
             $wire['inner'] = $this->inner;
         }
 
         return $wire;
+    }
+
+    /**
+     * 写成线上编码的 JSON 文本：整数值的浮点带小数点、非有限的浮点写成字符串，对方按值模型读回同样的值（ADR-0236）。
+     *
+     * @throws \JsonException 细节写不成 JSON
+     */
+    public function toJson(): string
+    {
+        return Json::encode($this);
     }
 
     private static function invalidMember(string $member, string $requirement): InvalidArgumentException

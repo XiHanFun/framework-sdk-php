@@ -16,14 +16,23 @@ use XiHan\Framework\Tests\Vectors;
  */
 final class WireEncodingTest extends TestCase
 {
+    /** 把向量里的 JSON 值写回文本：整数值的浮点保留小数点，按值模型仍是浮点 */
+    private const int FLAGS = JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR;
+
     public function testValidResultsReadAndWriteBackCanonically(): void
     {
         foreach (self::cases('results', 'valid') as $case) {
             $name = self::string($case, 'name');
-            $json = json_encode($case->json, JSON_THROW_ON_ERROR);
+            $json = json_encode($case->json, self::FLAGS);
             $expected = property_exists($case, 'canonical') ? $case->canonical : $case->json;
             $result = self::read(self::string($case, 'kind'), $json);
             self::assertSame(Vectors::canonicalJson($expected), Vectors::canonicalJson($result), $name);
+            // SDK 自己写出的文本读回同一个值：64 位整数精确，整数值的浮点仍是浮点
+            self::assertSame(
+                Vectors::canonicalJson($expected),
+                Vectors::canonicalJson(json_decode($result->toJson(), false, 512, JSON_THROW_ON_ERROR)),
+                $name . ' (toJson)',
+            );
             // 按关联数组解码的输入同样读得出
             $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
             self::assertSame($result->isOk(), self::readWire(self::string($case, 'kind'), $decoded)->isOk(), $name);
@@ -35,7 +44,7 @@ final class WireEncodingTest extends TestCase
         foreach (self::cases('results', 'invalid') as $case) {
             $name = self::string($case, 'name');
             try {
-                self::read(self::string($case, 'kind'), json_encode($case->json, JSON_THROW_ON_ERROR));
+                self::read(self::string($case, 'kind'), json_encode($case->json, self::FLAGS));
                 self::fail(sprintf('%s must be rejected', $name));
             } catch (InvalidArgumentException $exception) {
                 self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode(), $name);
@@ -48,9 +57,14 @@ final class WireEncodingTest extends TestCase
         foreach (self::cases('errors', 'valid') as $case) {
             $name = self::string($case, 'name');
             $expected = property_exists($case, 'canonical') ? $case->canonical : $case->json;
-            $error = Error::fromJson(json_encode($case->json, JSON_THROW_ON_ERROR));
+            $error = Error::fromJson(json_encode($case->json, self::FLAGS));
             self::assertSame(Vectors::canonicalJson($expected), Vectors::canonicalJson($error), $name);
             self::assertSame(Vectors::canonicalJson($expected), Vectors::canonicalJson(Error::fromWire($case->json)), $name);
+            self::assertSame(
+                Vectors::canonicalJson($expected),
+                Vectors::canonicalJson(json_decode($error->toJson(), false, 512, JSON_THROW_ON_ERROR)),
+                $name . ' (toJson)',
+            );
         }
     }
 
@@ -59,7 +73,7 @@ final class WireEncodingTest extends TestCase
         foreach (self::cases('errors', 'invalid') as $case) {
             $name = self::string($case, 'name');
             try {
-                Error::fromJson(json_encode($case->json, JSON_THROW_ON_ERROR));
+                Error::fromJson(json_encode($case->json, self::FLAGS));
                 self::fail(sprintf('%s must be rejected', $name));
             } catch (InvalidArgumentException $exception) {
                 self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode(), $name);
