@@ -67,7 +67,7 @@ final class ContextTest extends TestCase
         self::assertNotNull($parsed);
         self::assertSame($context->traceId(), $parsed->traceId);
         self::assertSame($context->spanId(), $parsed->spanId);
-        self::assertTrue($parsed->isSampled());
+        self::assertTrue($parsed->sampled);
         self::assertSame($context->traceId(), $derived->traceId(), 'derived contexts keep the trace');
 
         $context = Context::create(baggage: [
@@ -210,21 +210,24 @@ final class ContextTest extends TestCase
 
         $explicit = Context::create(traceId: '0af7651916cd43dd8448eb211c80319c', spanId: 'b7ad6b7169203331');
         self::assertSame('00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01', $explicit->traceParent());
-        self::assertSame(1, $explicit->traceFlags());
+        self::assertTrue($explicit->isSampled());
         self::assertStringEndsWith('-01', Context::create()->traceParent(), 'a root call writes 01');
         self::assertTrue(TraceParent::isTraceId(TraceParent::newTraceId()));
         self::assertTrue(TraceParent::isSpanId(TraceParent::newSpanId()));
 
-        // 只看最低位判断采样，其余位原样写出
+        // 只看最低位判断采样，其余位不进上下文，写出时只写采样位
         $other = Context::create(traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-03');
         self::assertTrue($other->isSampled());
-        self::assertSame(3, $other->traceFlags());
-        self::assertStringEndsWith('-03', $other->traceParent());
+        self::assertStringEndsWith('-01', $other->traceParent());
         $unsampled = Context::create(traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-fe');
         self::assertFalse($unsampled->isSampled());
-        self::assertStringEndsWith('-fe', $unsampled->traceParent());
-        $this->expectException(InvalidArgumentException::class);
-        new TraceParent('0af7651916cd43dd8448eb211c80319c', 'b7ad6b7169203331', 256);
+        self::assertStringEndsWith('-00', $unsampled->traceParent());
+
+        // 不合法的 traceparent 当作没有给出：生成新的追踪，不报错
+        $ignored = Context::create(traceParent: 'ff-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01');
+        self::assertNotSame('0af7651916cd43dd8448eb211c80319c', $ignored->traceId());
+        self::assertSame(32, strlen($ignored->traceId()));
+        self::assertTrue($ignored->isSampled());
     }
 
     public function testInvalidOptionsAreProgrammingErrors(): void
@@ -235,7 +238,6 @@ final class ContextTest extends TestCase
             'deadline and timeout' => static fn (): Context => Context::create(deadline: new \DateTimeImmutable(), timeout: 1.0),
             'negative timeout' => static fn (): Context => Context::create(timeout: -1.0),
             'infinite timeout' => static fn (): Context => Context::create(timeout: INF),
-            'invalid traceparent' => static fn (): Context => Context::create(traceParent: 'nope'),
             'traceparent and trace ID' => static fn (): Context => Context::create(
                 traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
                 traceId: '0af7651916cd43dd8448eb211c80319c',

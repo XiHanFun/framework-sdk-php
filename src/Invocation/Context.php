@@ -54,14 +54,14 @@ final class Context
      * @param Cancellation|null $cancellation 外部取消的令牌；null 即不会被外部取消
      * @param \DateTimeImmutable|null $deadline 绝对截止时间，按 UTC 保存
      * @param float|null $timeout 相对超时（秒），从时钟的当前时刻算起
-     * @param string|null $traceParent W3C traceparent；来自载体的文本先用 TraceParent::tryParse 判断
+     * @param string|null $traceParent W3C traceparent；不合法的当作没有给出、生成新的追踪（RFC-0003 规则 7）
      * @param string|null $traceId 追踪 ID；没有时生成
      * @param string|null $spanId Span ID；没有时生成
      * @param array<string, string> $baggage Baggage；键必须符合 `xihan.<name>`。已登记键的值不合约束
      *                                      （BaggageKeys::isAcceptableValue）的成员丢弃，xihan.idempotency-key 除外
      * @param Clock|null $clock 判定截止时间的时钟；null 即系统时钟
      *
-     * @throws InvalidArgumentException 选项冲突、超时不合法、追踪不合法或 Baggage 键不合法（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 选项冲突、超时不合法、追踪 ID 或 Span ID 不合法、Baggage 键不合法（PRIMITIVES_VALIDATION_001）
      */
     public static function create(
         ?Cancellation $cancellation = null,
@@ -183,19 +183,11 @@ final class Context
     }
 
     /**
-     * 返回是否采样：trace-flags 的最低位。
+     * 返回是否采样：来自上游 trace-flags 的最低位；本 SDK 生成或只给了追踪 ID 时为真。
      */
     public function isSampled(): bool
     {
-        return $this->trace->isSampled();
-    }
-
-    /**
-     * 返回 trace-flags（0–255）：来自上游的原样保留，本 SDK 生成或只给了追踪 ID 时为 01。
-     */
-    public function traceFlags(): int
-    {
-        return $this->trace->flags;
+        return $this->trace->sampled;
     }
 
     /**
@@ -315,24 +307,19 @@ final class Context
 
     private static function traceOf(?string $traceParent, ?string $traceId, ?string $spanId): TraceParent
     {
-        // 没有上游的标志（生成追踪、或只给了追踪 ID）时写 01：按已采样传下去，由下游的采样器决定（RFC-0003 规则 7）
-        if ($traceParent === null) {
-            return new TraceParent(
-                $traceId ?? TraceParent::newTraceId(),
-                $spanId ?? TraceParent::newSpanId(),
-                TraceParent::FLAG_SAMPLED,
-            );
-        }
-        if ($traceId !== null || $spanId !== null) {
+        if ($traceParent !== null && ($traceId !== null || $spanId !== null)) {
             throw new InvalidArgumentException(
                 'A context takes either a traceparent or a trace ID and span ID, not both.',
             );
         }
+        // 不合法的 traceparent 当作没有给出（RFC-0003 规则 7）：不报错，也不把坏值带进链路，改为生成新的追踪
+        $parsed = $traceParent === null ? null : TraceParent::tryParse($traceParent);
+        if ($parsed !== null) {
+            return $parsed;
+        }
 
-        return TraceParent::tryParse($traceParent)
-            ?? throw new InvalidArgumentException(
-                sprintf("The traceparent '%s' must match <version>-<trace-id>-<span-id>-<flags>.", $traceParent),
-            );
+        // 没有上游的标志（生成追踪、或只给了追踪 ID）时按已采样传下去，由下游的采样器决定
+        return new TraceParent($traceId ?? TraceParent::newTraceId(), $spanId ?? TraceParent::newSpanId(), true);
     }
 
     /**
