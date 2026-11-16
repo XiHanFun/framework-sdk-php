@@ -14,9 +14,16 @@ use XiHan\Framework\Primitives\Internal\Values;
  *
  * 模板：`{name}` 按名字、`{0}` 按位置取参数（位置参数的名字是 0、1…），名字符合 `^([A-Za-z][A-Za-z0-9_]*|[0-9]+)$`；
  * 第一个 `:` 之后到 `}` 是格式说明符。`{{`、`}}` 是转义的花括号；花括号里不是合法名字的原样输出，
- * 没有闭合的 `{` 及其后的全部文本原样输出，参数值里的花括号不再解释。可移植的格式说明符按不变文化解释：
- * `D[n]` 整数补零、`X[n]` / `x[n]` 十六进制、`F[n]` 定点小数、`N[n]` 带千分位的定点小数（n 缺省 2，
- * 按精确值正好一半取偶）；其余说明符按无格式输出，不报错。
+ * 没有闭合的 `{` 及其后的全部文本原样输出，参数值里的花括号不再解释。
+ *
+ * 值先归到值模型（RFC-0010「模板」，ADR-0236，PHP 的归法见 README）。格式说明符只认 `^[DdFfNnXx][0-9]{0,2}$`：
+ * `D[n]` 整数补零、`X[n]` / `x[n]` 非负整数的十六进制、`F[n]` 定点小数、`N[n]` 带千分位的定点小数（n 缺省 2，
+ * 按精确值正好一半取偶）；D、F、N 不分大小写。其余说明符，以及说明符用在不适用的值上（浮点的 D、负数的 X、
+ * 字符串、布尔、null、数组与对象），一律按无格式输出，不报错。
+ *
+ * 区域只改变小数点与分组符，取自规范的固定表（区域名不区分大小写）：de-DE、es-ES、pt-BR 是 `,` 与 `.`，fr-FR 是 `,`
+ * 与 U+202F，ru-RU 是 `,` 与 U+00A0，其余区域与不给区域都是 `.` 与 `,`。小数点用在无格式的浮点与 F、N 上，分组符只用在
+ * N 上；整数无格式时不分组，D、X 与数组、对象里的数字不受区域影响。
  */
 final class MessageTemplate
 {
@@ -29,8 +36,17 @@ final class MessageTemplate
     /** 占位符名文法：字母开头的名字或纯数字的位置 */
     private const string NAME_PATTERN = '/^([A-Za-z][A-Za-z0-9_]*|[0-9]+)$/D';
 
-    /** 可移植的格式说明符：D、X / x、F、N，可带精度；D、F、N 不分大小写，与 .NET 一致 */
-    private const string FORMAT_PATTERN = '/^([DdXxFfNn])([0-9]{0,3})$/D';
+    /** 可移植的格式说明符：D、X / x、F、N，可带至多两位精度（可有前导零）；D、F、N 不分大小写 */
+    private const string FORMAT_PATTERN = '/^([DdFfNnXx])([0-9]{0,2})$/D';
+
+    /** 内置区域的小数点与分组符，按小写区域名索引；表外的区域按不变文化 */
+    private const array SYMBOLS = [
+        'de-de' => [',', '.'],
+        'es-es' => [',', '.'],
+        'pt-br' => [',', '.'],
+        'fr-fr' => [',', " "],
+        'ru-ru' => [',', " "],
+    ];
 
     private function __construct()
     {
@@ -93,15 +109,17 @@ final class MessageTemplate
      * 宽松格式化：缺值的占位符连同格式说明符原样留在文本里，让遗漏可见。
      *
      * @param array<array-key, mixed>|null $arguments 命名参数，或 positional() 给出的位置参数；null 即没有参数
+     * @param string|null $locale 区域名，决定小数点与分组符；null 即不变文化
      */
-    public static function format(string $template, ?array $arguments): string
+    public static function format(string $template, ?array $arguments, ?string $locale = null): string
     {
         $arguments ??= [];
+        $symbols = self::symbols($locale);
 
         return self::scan(
             $template,
             static fn (string $name, ?string $format): ?string => array_key_exists($name, $arguments)
-                ? self::formatValue($arguments[$name], $format)
+                ? self::formatValue($arguments[$name], $format, $symbols)
                 : null,
         );
     }
@@ -110,21 +128,23 @@ final class MessageTemplate
      * 严格格式化：任一占位符缺值即返回 null（消息解析器据此判定解析失败、退回 describe）；值为 null 不算缺值。
      *
      * @param array<array-key, mixed>|null $arguments
+     * @param string|null $locale 区域名，决定小数点与分组符；null 即不变文化
      */
-    public static function tryFormat(string $template, ?array $arguments): ?string
+    public static function tryFormat(string $template, ?array $arguments, ?string $locale = null): ?string
     {
         $arguments ??= [];
+        $symbols = self::symbols($locale);
         $missing = false;
         $text = self::scan(
             $template,
-            static function (string $name, ?string $format) use ($arguments, &$missing): ?string {
+            static function (string $name, ?string $format) use ($arguments, $symbols, &$missing): ?string {
                 if (!array_key_exists($name, $arguments)) {
                     $missing = true;
 
                     return null;
                 }
 
-                return self::formatValue($arguments[$name], $format);
+                return self::formatValue($arguments[$name], $format, $symbols);
             },
         );
 
@@ -142,7 +162,17 @@ final class MessageTemplate
     }
 
     /**
-     * 在没有文案时描述一个消息：没有参数时是键本身，否则 `键 (name=value, ...)`，值按文本形式。
+     * 返回区域的小数点与分组符；表外的区域与 null 按不变文化（`.` 与 `,`）。
+     *
+     * @return array{string, string}
+     */
+    public static function numberSymbols(?string $locale): array
+    {
+        return self::symbols($locale);
+    }
+
+    /**
+     * 在没有文案时描述一个消息：没有参数时是键本身，否则 `键 (name=value, ...)`，值按文本形式（不变文化）。
      *
      * 参数按名字的序数顺序（逐个 UTF-16 码元比较）排列（RFC-0010，ADR-0235），各语言写出同样的文本。
      *
@@ -216,31 +246,49 @@ final class MessageTemplate
     }
 
     /**
-     * 按格式说明符写值；不认识的说明符、或说明符用在不适用的值上时按无格式输出。
+     * @return array{string, string}
      */
-    private static function formatValue(mixed $value, ?string $format): string
+    private static function symbols(?string $locale): array
     {
-        if ($format === null || preg_match(self::FORMAT_PATTERN, $format, $match) !== 1) {
-            return Values::text($value);
-        }
-        $letter = $match[1];
-        $kind = strtoupper($letter);
-        $precision = $match[2] === '' ? null : (int) $match[2];
-
-        return match (true) {
-            $kind === 'D' && is_int($value) => Numbers::integer($value, $precision ?? 0),
-            $kind === 'X' && is_int($value) && $value >= 0 => Numbers::hex($value, $precision ?? 0, $letter === 'X'),
-            $kind === 'F' && self::isFinite($value) => Numbers::fixed($value, $precision ?? 2, false),
-            $kind === 'N' && self::isFinite($value) => Numbers::fixed($value, $precision ?? 2, true),
-            default => Values::text($value),
-        };
+        return $locale === null ? ['.', ','] : self::SYMBOLS[strtolower($locale)] ?? ['.', ','];
     }
 
     /**
-     * @phpstan-assert-if-true int|float $value
+     * 按格式说明符写值；不认的说明符、或说明符用在不适用的值上时按无格式输出。
+     *
+     * @param array{string, string} $symbols 小数点与分组符
      */
-    private static function isFinite(mixed $value): bool
+    private static function formatValue(mixed $value, ?string $format, array $symbols): string
     {
-        return is_int($value) || (is_float($value) && is_finite($value));
+        [$decimal, $group] = $symbols;
+        $value = Values::model($value);
+        $letter = null;
+        $precision = null;
+        if ($format !== null && preg_match(self::FORMAT_PATTERN, $format, $match) === 1) {
+            // D、F、N 不分大小写；X 与 x 定十六进制数字的大小写
+            $letter = in_array($match[1], ['X', 'x'], true) ? $match[1] : strtoupper($match[1]);
+            $precision = $match[2] === '' ? null : (int) $match[2];
+        }
+        if (is_int($value)) {
+            $text = match (true) {
+                $letter === 'D' => Numbers::integer($value, $precision ?? 0),
+                ($letter === 'X' || $letter === 'x') && $value >= 0
+                    => Numbers::hex($value, $precision ?? 0, $letter === 'X'),
+                $letter === 'F' || $letter === 'N' => Numbers::fixed($value, $precision ?? 2, $letter === 'N'),
+                default => (string) $value,
+            };
+
+            return Values::localize($text, $decimal, $group);
+        }
+        if (is_float($value)) {
+            // 非数与无穷写 F、N 时与无格式相同
+            $text = ($letter === 'F' || $letter === 'N') && is_finite($value)
+                ? Numbers::fixed($value, $precision ?? 2, $letter === 'N')
+                : Numbers::plain($value);
+
+            return Values::localize($text, $decimal, $group);
+        }
+
+        return Values::text($value);
     }
 }

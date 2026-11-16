@@ -6,6 +6,8 @@ namespace XiHan\Framework\Tests\Primitives;
 
 use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Primitives\MessageTemplate;
+use XiHan\Framework\Primitives\Stability;
+use XiHan\Framework\Primitives\Unit;
 use XiHan\Framework\Tests\Vectors;
 
 /**
@@ -27,27 +29,92 @@ final class MessageTemplatesTest extends TestCase
 
     public function testFormattingFollowsTheVector(): void
     {
-        foreach (Vectors::objects(Vectors::primitives('message-templates'), 'format') as $case) {
-            $name = $case['name'] ?? null;
-            $template = $case['template'] ?? null;
-            $arguments = $case['arguments'] ?? null;
+        // 按对象解码：参数里的 {} 与 [] 不混淆，整数写法的数字在 64 位范围内是 int，其余是 float，与值模型一致
+        foreach (self::cases('format') as $case) {
+            $name = $case->name ?? null;
+            $template = $case->template ?? null;
+            $locale = $case->locale ?? null;
             self::assertIsString($name);
             self::assertIsString($template);
-            self::assertTrue($arguments === null || is_array($arguments), $name);
-            self::assertSame($case['lenient'] ?? null, MessageTemplate::format($template, $arguments), $name . ' (lenient)');
-            self::assertSame($case['strict'] ?? null, MessageTemplate::tryFormat($template, $arguments), $name . ' (strict)');
+            self::assertTrue($locale === null || is_string($locale), $name);
+            $arguments = self::arguments($case);
+            self::assertSame($case->lenient ?? null, MessageTemplate::format($template, $arguments, $locale), $name . ' (lenient)');
+            self::assertSame($case->strict ?? null, MessageTemplate::tryFormat($template, $arguments, $locale), $name . ' (strict)');
         }
     }
 
     public function testDescribeFollowsTheVector(): void
     {
-        foreach (Vectors::objects(Vectors::primitives('message-templates'), 'describe') as $case) {
-            $key = $case['key'] ?? null;
-            $arguments = $case['arguments'] ?? null;
+        foreach (self::cases('describe') as $case) {
+            $key = $case->key ?? null;
             self::assertIsString($key);
-            self::assertTrue($arguments === null || is_array($arguments));
-            self::assertSame($case['text'] ?? null, MessageTemplate::describe($key, $arguments));
+            self::assertSame($case->text ?? null, MessageTemplate::describe($key, self::arguments($case)));
         }
+    }
+
+    public function testPhpValuesFollowTheValueModel(): void
+    {
+        $date = new \DateTimeImmutable('2026-11-16T10:00:00+08:00');
+        $arguments = [
+            'list' => [1, 'a'],
+            'map' => ['b' => 1, 'a' => [2 => 'x']],
+            'empty' => [],
+            'object' => (object) ['z' => 1.0, 'y' => null],
+            'enum' => Stability::Preview,
+            'unit' => Unit::Value,
+            'date' => $date,
+            'id' => new OrderId('o-1'),
+            'json' => new class () implements \JsonSerializable {
+                public function jsonSerialize(): mixed
+                {
+                    return ['n' => 2.5];
+                }
+            },
+        ];
+        self::assertSame(
+            '[1,"a"] {"a":{"2":"x"},"b":1} [] {"y":null,"z":1} preview Value 2026-11-16T10:00:00+08:00 o-1 {"n":2.5}',
+            MessageTemplate::format('{list} {map} {empty} {object} {enum} {unit} {date} {id} {json}', $arguments),
+        );
+        // 超过 64 层的容器写成 null
+        $deep = [1];
+        for ($depth = 1; $depth < 65; $depth++) {
+            $deep = [$deep];
+        }
+        $text = MessageTemplate::format('{v}', ['v' => $deep]);
+        self::assertSame(str_repeat('[', 64) . 'null' . str_repeat(']', 64), $text);
+        self::assertSame(['.', ','], MessageTemplate::numberSymbols(null));
+        self::assertSame([',', "\u{202F}"], MessageTemplate::numberSymbols('FR-fr'));
+        self::assertSame(['.', ','], MessageTemplate::numberSymbols('it-IT'));
+    }
+
+    /**
+     * @return list<\stdClass>
+     */
+    private static function cases(string $section): array
+    {
+        $cases = Vectors::primitivesAsObject('message-templates')->{$section} ?? null;
+        self::assertIsArray($cases);
+        self::assertNotEmpty($cases);
+        $checked = [];
+        foreach ($cases as $case) {
+            self::assertInstanceOf(\stdClass::class, $case);
+            $checked[] = $case;
+        }
+
+        return $checked;
+    }
+
+    /**
+     * 取用例的参数表：顶层是参数名到值，值保持对象解码的原样。
+     *
+     * @return array<array-key, mixed>|null
+     */
+    private static function arguments(\stdClass $case): ?array
+    {
+        $arguments = $case->arguments ?? null;
+        self::assertTrue($arguments === null || $arguments instanceof \stdClass);
+
+        return $arguments === null ? null : get_object_vars($arguments);
     }
 
     public function testFixedPointUsesTheExactBinaryValue(): void

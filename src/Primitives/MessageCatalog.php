@@ -67,6 +67,7 @@ final readonly class MessageCatalog implements MessageResolver
             $template = $this->templates[strtolower(LocaleName::DEFAULT)][$key] ?? null;
         }
 
-        return $template === null ? null : MessageTemplate::tryFormat($template, $arguments);
+        // 数字按请求的区域写小数点与分组符，回退到 en-US 的模板也一样
+        return $template === null ? null : MessageTemplate::tryFormat($template, $arguments, $locale);
     }
 }
