@@ -8,6 +8,7 @@ use XiHan\Framework\Manifest\Internal\Checks;
 use XiHan\Framework\Manifest\Internal\Fields;
 use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\ErrorCode;
+use XiHan\Framework\Primitives\Internal\Duplicates;
 use XiHan\Framework\Primitives\Internal\Values;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\PipelineStage;
@@ -51,8 +52,8 @@ final readonly class Manifest implements \JsonSerializable
     /** @var list<Binding> */
     public array $bindings;
 
-    /** @var list<string> */
-    public array $activation;
+    /** @var list<string>|null 激活事件；null 即没有写（按 onStartup），写了就至少一项 */
+    public ?array $activation;
 
     /** @var list<string> */
     public array $permissions;
@@ -73,7 +74,7 @@ final readonly class Manifest implements \JsonSerializable
      * @param list<CapabilityRequirement> $requires 依赖的能力
      * @param list<Binding> $bindings 需要宿主注入的资源
      * @param Contributions|null $contributes 贡献点
-     * @param list<string> $activation 激活事件；空即 onStartup
+     * @param list<string>|null $activation 激活事件；null 即没有写，按 onStartup 处理；写了就至少一项
      * @param list<string> $permissions 插件所需权限
      * @param string|null $entry 入口
      *
@@ -93,14 +94,14 @@ final readonly class Manifest implements \JsonSerializable
         array $requires = [],
         array $bindings = [],
         public ?Contributions $contributes = null,
-        array $activation = [],
+        ?array $activation = null,
         array $permissions = [],
         public ?string $entry = null,
     ) {
         $this->provides = Checks::listOf(CapabilityDeclaration::class, $provides, 'provides');
         $this->requires = Checks::listOf(CapabilityRequirement::class, $requires, 'requires');
         $this->bindings = Checks::listOf(Binding::class, $bindings, 'bindings');
-        $this->activation = Checks::strings($activation, 'activation');
+        $this->activation = $activation === null ? null : Checks::strings($activation, 'activation');
         $this->permissions = Checks::strings($permissions, 'permissions');
         $this->validate();
     }
@@ -115,7 +116,16 @@ final readonly class Manifest implements \JsonSerializable
     public static function read(string $json): self
     {
         try {
-            return self::fromFields(Fields::of(json_decode($json, false, 512, JSON_THROW_ON_ERROR), '$'));
+            $decoded = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
+            // json_decode 遇到同一层重复的成员名悄悄取最后一个，只能在原文上核对（RFC-0002 解析规则 2）
+            $duplicate = Duplicates::find($json);
+            if ($duplicate !== null) {
+                throw new \UnexpectedValueException(
+                    sprintf("the member '%s' appears more than once in one object", $duplicate),
+                );
+            }
+
+            return self::fromFields(Fields::of($decoded, '$'));
         } catch (\JsonException | \UnexpectedValueException $exception) {
             throw new InvalidArgumentException(
                 'The manifest is not valid JSON for the schema: ' . $exception->getMessage() . '.',
@@ -170,7 +180,7 @@ final readonly class Manifest implements \JsonSerializable
      */
     public function effectiveActivation(): array
     {
-        return $this->activation === [] ? [self::ON_STARTUP] : $this->activation;
+        return $this->activation ?? [self::ON_STARTUP];
     }
 
     /**
@@ -258,7 +268,7 @@ final readonly class Manifest implements \JsonSerializable
         if ($this->contributes !== null) {
             $wire['contributes'] = $this->contributes;
         }
-        if ($this->activation !== []) {
+        if ($this->activation !== null) {
             $wire['activation'] = $this->activation;
         }
         if ($this->permissions !== []) {
@@ -307,7 +317,7 @@ final readonly class Manifest implements \JsonSerializable
             requires: array_map(self::requirementOf(...), $fields->objects('requires')),
             bindings: array_map(self::bindingOf(...), $fields->objects('bindings')),
             contributes: self::contributionsOf($fields->optionalObject('contributes')),
-            activation: $fields->strings('activation'),
+            activation: $fields->optionalStrings('activation'),
             permissions: $fields->strings('permissions'),
             entry: $fields->optionalString('entry'),
         );
@@ -407,7 +417,14 @@ final readonly class Manifest implements \JsonSerializable
         $this->rejectDuplicate($required, 'requires');
         $bound = array_map(static fn (Binding $binding): string => $binding->name, $this->bindings);
         $this->rejectDuplicate($bound, 'declares the binding');
-        foreach ($this->activation as $event) {
+        // activation 写了就至少一项：空数组不是「没有写」，缺省才是 onStartup（RFC-0002 解析规则 2）
+        if ($this->activation === []) {
+            $this->fail(
+                "The activation of '%s' must list at least one event; omit it to activate on startup",
+                $this->id,
+            );
+        }
+        foreach ($this->activation ?? [] as $event) {
             if (preg_match(self::ACTIVATION_PATTERN, $event) !== 1) {
                 $this->fail("The activation event '%s' of '%s' is not valid", $event, $this->id);
             }

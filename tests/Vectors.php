@@ -33,9 +33,17 @@ final class Vectors
      */
     public static function primitivesAsObject(string $name): \stdClass
     {
-        $data = json_decode(self::text($name), false, 512, JSON_THROW_ON_ERROR);
+        return self::object('primitives/' . $name);
+    }
+
+    /**
+     * 读取 `spec/conformance/vectors/<path>.json`（如 `manifest/manifests`），按对象解码。
+     */
+    public static function object(string $path): \stdClass
+    {
+        $data = json_decode(self::read($path), false, 512, JSON_THROW_ON_ERROR);
         if (!$data instanceof \stdClass) {
-            throw new \RuntimeException(sprintf("The conformance vector '%s' must be a JSON object.", $name));
+            throw new \RuntimeException(sprintf("The conformance vector '%s' must be a JSON object.", $path));
         }
 
         return $data;
@@ -63,7 +71,12 @@ final class Vectors
 
     private static function text(string $name): string
     {
-        $path = dirname(__DIR__) . '/spec/conformance/vectors/primitives/' . $name . '.json';
+        return self::read('primitives/' . $name);
+    }
+
+    private static function read(string $relative): string
+    {
+        $path = dirname(__DIR__) . '/spec/conformance/vectors/' . $relative . '.json';
         $json = is_file($path) ? file_get_contents($path) : false;
         if ($json === false) {
             throw new \RuntimeException(

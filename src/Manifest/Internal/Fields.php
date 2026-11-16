@@ -129,6 +129,18 @@ final readonly class Fields
     }
 
     /**
+     * 读取可选的字符串数组字段；没有写为 null，与写了空数组区分开。
+     *
+     * @return list<string>|null
+     *
+     * @throws \UnexpectedValueException
+     */
+    public function optionalStrings(string $name): ?array
+    {
+        return property_exists($this->object, $name) ? $this->strings($name) : null;
+    }
+
+    /**
      * 读取可选的对象数组字段；没有写为空列表。
      *
      * @return list<self>

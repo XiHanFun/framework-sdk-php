@@ -88,7 +88,7 @@ final class ManifestTest extends TestCase
         $manifest = Manifest::read(
             '{"contributes":{"permissions":[]},"kind":"capability","stability":"stable","primitives":"1",'
             . '"version":"1.0.0","id":"xihan.a.b","requires":[{"optional":false,"version":"^1","id":"kernel.hosting"}],'
-            . '"bindings":[{"name":"db","type":"connection:relational","required":true}],"activation":[]}',
+            . '"bindings":[{"name":"db","type":"connection:relational","required":true}]}',
         );
         $expected = <<<'JSON'
             {
@@ -189,6 +189,9 @@ final class ManifestTest extends TestCase
             'huge version' => '{' . $base . ',"kind":"capability","provides":[{"id":"a.b","version":"99999999999999999999"}]}',
             'explicit null' => '{' . $base . ',"kind":"capability","package":null}',
             'contributes as array' => '{' . $base . ',"kind":"capability","contributes":[]}',
+            'empty activation' => '{' . $base . ',"kind":"capability","activation":[]}',
+            'duplicate member' => '{' . $base . ',"kind":"capability","kind":"provider"}',
+            'duplicate nested member' => '{' . $base . ',"kind":"capability","requires":[{"id":"a.b","version":"1","id":"c.d"}]}',
             'duplicate bindings' => '{' . $base . ',"kind":"capability","bindings":[{"name":"db","type":"queue"},{"name":"db","type":"blob"}]}',
             'bad role' => '{' . $base . ',"kind":"provider","role":"primary"}',
             'bad isolation' => '{' . $base . ',"kind":"plugin","isolation":"thread"}',
