@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Primitives\Internal;
 
+use XiHan\Framework\Primitives\JsonObject;
+
 /**
  * 把已过共同检查的 JSON 文本读成 JsonNode（RFC-0001「JSON 文本」、RFC-0011 规则 2）。
  *
@@ -32,6 +34,30 @@ final class JsonReader
         $reader = new self($text);
 
         return $reader->value();
+    }
+
+    /**
+     * 把读出的树归到值模型（RFC-0010「模板」，ADR-0236）：对象是 JsonObject（成员名原样、按文本顺序），数组是列表，
+     * 数字是 int 或 float（上溢为无穷），字符串、布尔与 null 原样。
+     */
+    public static function toValue(JsonNode $node): mixed
+    {
+        return match ($node->kind) {
+            JsonNode::OBJECT => JsonObject::of(array_combine(
+                array_map(static fn (array $member): string => $member[0], $node->members()),
+                array_map(static fn (array $member): mixed => self::toValue($member[1]), $node->members()),
+            )),
+            JsonNode::ARRAY => array_map(self::toValue(...), $node->items()),
+            default => $node->value,
+        };
+    }
+
+    /**
+     * 读出已过共同检查的文本，归到值模型。
+     */
+    public static function decode(string $text): mixed
+    {
+        return self::toValue(self::parse($text));
     }
 
     private function value(): JsonNode

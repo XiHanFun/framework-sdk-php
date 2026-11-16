@@ -4,13 +4,15 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Primitives\Internal;
 
+use XiHan\Framework\Primitives\JsonObject;
+
 /**
  * 原语层内部用的取值工具：判断 JSON 可表示性、值模型与值的文本形式（RFC-0010「模板」）。
  *
  * 值模型（ADR-0236）只有空、布尔、字符串、64 位有符号整数、双精度浮点、数组与对象七种，PHP 的值按下面归入：
  *
  * - null、bool、string、int（PHP 的 int 就是 64 位）、float 原样。
- * - 数组：列表（array_is_list，含空数组）是数组，其余是对象，键写成字符串；stdClass 是对象。
+ * - 数组：列表（array_is_list，含空数组）是数组，其余是对象，键写成字符串；JsonObject 与 stdClass 是对象。
  * - 模型之外的值写成 PHP 的文本：BackedEnum 取值的文本，UnitEnum 取名字，Stringable 取 `(string)`，
  *   DateTimeInterface 取 ATOM 格式（`2026-11-16T10:00:00+08:00`），JsonSerializable 取 jsonSerialize() 再归入，
  *   其余对象写类型名。它们不跨语言，插件要跨语言格式化时先转成字符串。
@@ -39,11 +41,11 @@ final class Values
     }
 
     /**
-     * 把值归到值模型：结果是 null、bool、string、int、float、数组或 stdClass。
+     * 把值归到值模型：结果是 null、bool、string、int、float、数组、JsonObject 或 stdClass。
      */
     public static function model(mixed $value, int $depth = 0): mixed
     {
-        if ($value === null || is_scalar($value) || is_array($value) || $value instanceof \stdClass) {
+        if (self::isContainer($value) || $value === null || is_scalar($value)) {
             return $value;
         }
         if ($value instanceof \BackedEnum) {
@@ -148,7 +150,7 @@ final class Values
         if (is_float($value)) {
             return Numbers::plain($value);
         }
-        if ($depth > self::MAX_TEXT_DEPTH || !(is_array($value) || $value instanceof \stdClass)) {
+        if ($depth > self::MAX_TEXT_DEPTH || !self::isContainer($value)) {
             return 'null';
         }
         if (is_array($value) && array_is_list($value)) {
@@ -160,7 +162,12 @@ final class Values
             return '[' . implode(',', $items) . ']';
         }
         $members = [];
-        foreach ($value instanceof \stdClass ? get_object_vars($value) : $value as $name => $item) {
+        $entries = match (true) {
+            $value instanceof JsonObject => $value->toArray(),
+            $value instanceof \stdClass => get_object_vars($value),
+            default => $value,
+        };
+        foreach ($entries as $name => $item) {
             $name = (string) $name;
             $members[] = [self::ordinalKey($name), $name, $item];
         }
@@ -172,6 +179,16 @@ final class Values
         }
 
         return '{' . implode(',', $parts) . '}';
+    }
+
+    /**
+     * 判断值是不是值模型里的数组或对象：PHP 数组、JsonObject 或 stdClass。
+     *
+     * @phpstan-assert-if-true array<array-key, mixed>|JsonObject|\stdClass $value
+     */
+    private static function isContainer(mixed $value): bool
+    {
+        return is_array($value) || $value instanceof JsonObject || $value instanceof \stdClass;
     }
 
     /**

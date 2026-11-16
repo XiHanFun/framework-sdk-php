@@ -6,6 +6,7 @@ namespace XiHan\Framework\Tests\Primitives;
 
 use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\FailureException;
 use XiHan\Framework\Primitives\InvalidArgumentException;
@@ -31,9 +32,9 @@ final class ResultAndMaybeTest extends TestCase
         self::assertTrue($decoded->isFailed());
         self::assertSame('ORDERS_CONFLICT_001', $decoded->error()?->code);
 
-        // 按对象模式解码：对象是 stdClass
+        // 按值模型读：对象是 JsonObject
         $value = Result::fromJson('{"ok":true,"value":{"id":"o1"}}', static fn (mixed $value): OrderId => new OrderId(
-            $value instanceof \stdClass && is_string($value->id ?? null) ? $value->id : '',
+            $value instanceof JsonObject && is_string($value['id']) ? $value['id'] : '',
         ));
         self::assertTrue($value->valueOrThrow()->equals(new OrderId('o1')));
 

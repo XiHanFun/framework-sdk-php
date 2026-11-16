@@ -168,7 +168,7 @@ final readonly class Error implements \JsonSerializable, \Stringable
     }
 
     /**
-     * 从线上编码还原；接受 `json_decode` 的对象（stdClass）或关联数组。
+     * 从线上编码还原；接受 fromJson 按值模型读出的 JsonObject，也接受 `json_decode` 的对象（stdClass）或关联数组。
      *
      * 规则（RFC-0001「Result」）：code 必填且合文法，message 必填且是非空字符串；messageKey、details、inner 可选，
      * 写了就不能是 null——messageKey 合消息键文法，details 是 JSON 对象，inner 是合法的 Error。未知成员忽略。
@@ -203,8 +203,8 @@ final readonly class Error implements \JsonSerializable, \Stringable
             if (!Wire::isObject($wireDetails)) {
                 throw self::invalidMember('details', 'be a JSON object');
             }
-            // 只把最外层转成数组；嵌套的对象保持 stdClass，再写出时空对象仍是 {}
-            $details = $wireDetails instanceof \stdClass ? get_object_vars($wireDetails) : $wireDetails;
+            // 只把最外层转成数组；嵌套的对象保持原来的形态（JsonObject 或 stdClass），再写出时空对象仍是 {}
+            $details = Wire::members($wireDetails, 'The details of an error on the wire must be a JSON object.');
             if (!Values::isJson($details)) {
                 throw self::invalidMember('details', 'only hold JSON values');
             }
@@ -310,7 +310,8 @@ final readonly class Error implements \JsonSerializable, \Stringable
         }
         if ($this->details !== []) {
             // 非有限的浮点写成字符串 NaN、Infinity、-Infinity（RFC-0001「Result」，ADR-0236）
-            $wire['details'] = Json::writable((object) $this->details);
+            // 按 JsonObject 写：成员名原样，以 U+0000 开头的也写得出（toJson），纯数字的成员名不会变成数组
+            $wire['details'] = Json::writable(JsonObject::of($this->details));
         }
         if ($this->inner !== null) {
             $wire['inner'] = $this->inner;

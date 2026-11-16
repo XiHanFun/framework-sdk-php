@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Tests\Vectors;
 
@@ -113,6 +114,57 @@ final class WireEncodingTest extends TestCase
         );
         self::assertSame('code', $error->message());
         self::assertSame('x', $error->details['code']);
+    }
+
+    public function testWireValuesFollowTheValueModelWithoutStdClass(): void
+    {
+        // 值与细节按值模型读（ADR-0236）：对象是 JsonObject，成员名原样（以 U+0000 开头、纯数字的都行），{} 与 [] 不混淆，
+        // 64 位整数精确，1e400 是无穷；再写出时 JSON 值相同，无穷按值模型写成 "Infinity"
+        $value = '{"\u0000a":1,"o":{},"l":[],"0":{"1":[{}]},"n":9007199254740993,"f":2.0,"z":-0.0}';
+        $result = Result::fromJson('{"ok":true,"value":' . $value . ',"\u0000unknown":true}');
+        $read = $result->valueOrThrow();
+        self::assertInstanceOf(JsonObject::class, $read);
+        self::assertSame(["\0a", 'o', 'l', '0', 'n', 'f', 'z'], $read->names());
+        self::assertSame(1, $read["\0a"]);
+        self::assertEquals(JsonObject::of(), $read['o']);
+        self::assertSame([], $read['l']);
+        self::assertSame(9007199254740993, $read['n']);
+        self::assertSame('{"ok":true,"value":' . $value . '}', $result->toJson());
+        self::assertSame([INF], Result::fromJson('{"ok":true,"value":[1e400]}')->valueOrThrow());
+        self::assertSame('{"ok":true,"value":["Infinity"]}', Result::fromJson('{"ok":true,"value":[1e400]}')->toJson());
+
+        $error = Error::fromJson(
+            '{"code":"KERNEL_UNEXPECTED_001","message":"x","details":{"\u0000k":{"\u0000n":{}},"big":1e400,"0":[]},'
+            . '"inner":{"code":"KERNEL_UNEXPECTED_001","message":"y","details":{"\u0000m":[{}]}},"\u0000extra":1}',
+        );
+        self::assertSame(["\0k", 'big', 0], array_keys($error->details));
+        self::assertEquals(JsonObject::of(["\0n" => JsonObject::of()]), $error->details["\0k"]);
+        self::assertSame(INF, $error->details['big']);
+        self::assertSame(
+            '{"code":"KERNEL_UNEXPECTED_001","message":"x","details":{"\u0000k":{"\u0000n":{}},"big":"Infinity","0":[]},'
+            . '"inner":{"code":"KERNEL_UNEXPECTED_001","message":"y","details":{"\u0000m":[{}]}}}',
+            $error->toJson(),
+        );
+        // 自己 json_decode 的结果照样接受
+        self::assertTrue(Result::fromWire(json_decode('{"ok":true,"value":{"id":"o1"}}'))->isOk());
+    }
+
+    public function testJsonObjectsAreImmutableOrderedMaps(): void
+    {
+        $object = JsonObject::of(['b' => 1, "\0a" => null, '7' => 2]);
+        self::assertSame(['b', "\0a", '7'], $object->names());
+        self::assertSame(['b' => 1, "\0a" => null, '7' => 2], iterator_to_array($object));
+        self::assertTrue($object->has("\0a"));
+        self::assertFalse($object->has('missing'));
+        self::assertNull($object->get('missing'));
+        self::assertCount(3, $object);
+        $changed = $object->with('b', 3)->with('c', 4);
+        self::assertSame(['b', "\0a", '7', 'c'], $changed->names());
+        self::assertSame(1, $object['b'], 'with() leaves the original unchanged');
+        self::assertSame('{}', json_encode(JsonObject::of(), JSON_THROW_ON_ERROR));
+        self::assertSame('{"7":2}', json_encode(JsonObject::of(['7' => 2]), JSON_THROW_ON_ERROR));
+        $this->expectException(\LogicException::class);
+        $object['b'] = 2;
     }
 
     public function testTheSdkWritesTheCanonicalForms(): void

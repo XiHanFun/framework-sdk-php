@@ -69,7 +69,7 @@ final readonly class Result implements \JsonSerializable, \Stringable
     }
 
     /**
-     * 从线上编码还原有值的结果；接受 `json_decode` 的对象（stdClass）或关联数组。
+     * 从线上编码还原有值的结果；接受 fromJson 按值模型读出的 JsonObject，也接受 `json_decode` 的对象（stdClass）或关联数组。
      *
      * 成功时 value 必填且不能是 null；成功值按 JSON 解码的形状交给 `$value` 变换成目标类型，不给时原样作为值。
      * 失败时 error 必填、不能带 value；成功不能带 error；未知成员忽略（RFC-0001「Result」）。
@@ -145,7 +145,8 @@ final readonly class Result implements \JsonSerializable, \Stringable
     }
 
     /**
-     * 从线上编码的 JSON 文本还原有值的结果（按对象模式解码，对象是 stdClass）。
+     * 从线上编码的 JSON 文本还原有值的结果：按值模型读，值里的对象是 JsonObject（成员名原样，`{}` 与 `[]` 不混淆），
+     * 64 位范围内的整数精确，`1e400` 是无穷。
      *
      * @template TValue
      *

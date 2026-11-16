@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Primitives\Internal;
 
+use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\RawJson;
 
 /**
@@ -40,21 +41,47 @@ final class Json
      */
     public static function encode(mixed $value, bool $nonFiniteAsText = true): string
     {
-        $raw = [];
-        $token = bin2hex(random_bytes(8));
-        $prepared = self::prepare($value, 0, $nonFiniteAsText, $token, $raw);
         $precision = ini_get('serialize_precision');
         ini_set('serialize_precision', '-1');
         try {
-            $json = json_encode($prepared, self::FLAGS);
+            return self::encodeValue($value, 0, $nonFiniteAsText, bin2hex(random_bytes(8)));
         } finally {
             if ($precision !== false) {
                 ini_set('serialize_precision', $precision);
             }
         }
+    }
 
-        // json_encode 不能写原文：先写成只在这次调用里出现的占位字符串，再换回原文
+    /**
+     * 写一个值：json_encode 写不了原文与 JsonObject，先写成只在这次调用里出现的占位字符串，再换回它们的文本。
+     *
+     * @throws \JsonException
+     */
+    private static function encodeValue(mixed $value, int $depth, bool $nonFiniteAsText, string $token): string
+    {
+        $raw = [];
+        $json = json_encode(self::prepare($value, $depth, $nonFiniteAsText, $token, $raw), self::FLAGS);
+
         return $raw === [] ? $json : strtr($json, $raw);
+    }
+
+    /**
+     * 写一个 JsonObject：成员按顺序，成员名原样（以 U+0000 开头、纯数字的都行），空对象写 `{}`。
+     *
+     * @throws \JsonException
+     */
+    private static function encodeObject(JsonObject $object, int $depth, bool $nonFiniteAsText, string $token): string
+    {
+        if ($depth >= self::MAX_DEPTH) {
+            throw new \JsonException('Maximum stack depth exceeded', JSON_ERROR_DEPTH);
+        }
+        $members = [];
+        foreach ($object as $name => $item) {
+            $members[] = json_encode($name, self::FLAGS) . ':'
+                . self::encodeValue($item, $depth + 1, $nonFiniteAsText, $token);
+        }
+
+        return '{' . implode(',', $members) . '}';
     }
 
     /**
@@ -68,6 +95,15 @@ final class Json
         }
         if ($depth >= self::MAX_DEPTH || $value instanceof RawJson) {
             return $value;
+        }
+        // JsonObject 保持原来的类型，Json::encode 按成员原样写出
+        if ($value instanceof JsonObject) {
+            $members = [];
+            foreach ($value->toArray() as $name => $item) {
+                $members[$name] = self::writable($item, $depth + 1);
+            }
+
+            return JsonObject::of($members);
         }
         if ($value instanceof \JsonSerializable) {
             return self::writable($value->jsonSerialize(), $depth + 1);
@@ -105,9 +141,11 @@ final class Json
         if ($depth >= self::MAX_DEPTH) {
             return $value;
         }
-        if ($value instanceof RawJson) {
-            $placeholder = "\u{E000}" . $token . count($raw) . "\u{E000}";
-            $raw['"' . $placeholder . '"'] = $value->json;
+        if ($value instanceof RawJson || $value instanceof JsonObject) {
+            $placeholder = "\u{E000}" . $token . $depth . '.' . count($raw) . "\u{E000}";
+            $raw['"' . $placeholder . '"'] = $value instanceof RawJson
+                ? $value->json
+                : self::encodeObject($value, $depth, $nonFiniteAsText, $token);
 
             return $placeholder;
         }
