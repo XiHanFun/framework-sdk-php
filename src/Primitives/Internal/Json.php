@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Primitives\Internal;
 
+use XiHan\Framework\Primitives\RawJson;
+
 /**
  * 写 JSON 文本：线上编码按值模型写数字（RFC-0001「Result」，ADR-0236），字符串按 RFC-0010「模板」的写法转义。
  *
@@ -29,32 +31,42 @@ final class Json
     }
 
     /**
-     * 把值写成紧凑的 JSON 文本。
+     * 把值写成紧凑的 JSON 文本；RawJson 原样放回读到的原文（RFC-0011 规则 2）。
      *
-     * @throws \JsonException 值写不成 JSON（非法 UTF-8、资源、嵌套过深）
+     * @param bool $nonFiniteAsText 非有限的浮点写成字符串（无类型的值：错误细节、Result 的值）；为假时写不出，抛出
+     *     （类型化的响应：NaN 与无穷不写成 null 或字符串，RFC-0011 规则 10「编码」）
+     *
+     * @throws \JsonException 值写不成 JSON（非法 UTF-8、非有限的浮点、不支持的值、嵌套过深）
      */
-    public static function encode(mixed $value): string
+    public static function encode(mixed $value, bool $nonFiniteAsText = true): string
     {
+        $raw = [];
+        $token = bin2hex(random_bytes(8));
+        $prepared = self::prepare($value, 0, $nonFiniteAsText, $token, $raw);
         $precision = ini_get('serialize_precision');
         ini_set('serialize_precision', '-1');
         try {
-            return json_encode(self::writable($value, 0), self::FLAGS);
+            $json = json_encode($prepared, self::FLAGS);
         } finally {
             if ($precision !== false) {
                 ini_set('serialize_precision', $precision);
             }
         }
+
+        // json_encode 不能写原文：先写成只在这次调用里出现的占位字符串，再换回原文
+        return $raw === [] ? $json : strtr($json, $raw);
     }
 
     /**
-     * 把值里的非有限浮点换成字符串，JsonSerializable 先展开，其余原样；数组与 stdClass 保持原来的形态。
+     * 把值里的非有限浮点换成字符串，JsonSerializable 先展开（RawJson 留给 Json::encode 或它自己的 jsonSerialize），其余原样；
+     * 数组与 stdClass 保持原来的形态。
      */
     public static function writable(mixed $value, int $depth = 0): mixed
     {
         if (is_float($value)) {
             return is_finite($value) ? $value : Numbers::plain($value);
         }
-        if ($depth >= self::MAX_DEPTH) {
+        if ($depth >= self::MAX_DEPTH || $value instanceof RawJson) {
             return $value;
         }
         if ($value instanceof \JsonSerializable) {
@@ -77,6 +89,48 @@ final class Json
         }
 
         return $value;
+    }
+
+    /**
+     * 为 json_encode 准备值：RawJson 换成占位字符串并记下原文，JsonSerializable 展开，普通对象取公开属性（与 json_encode
+     * 一样），非有限的浮点按 `$nonFiniteAsText` 换成字符串或留给 json_encode 报错。
+     *
+     * @param array<string, string> $raw 占位字符串（连引号）→ 原文
+     */
+    private static function prepare(mixed $value, int $depth, bool $nonFiniteAsText, string $token, array &$raw): mixed
+    {
+        if (is_float($value)) {
+            return $nonFiniteAsText && !is_finite($value) ? Numbers::plain($value) : $value;
+        }
+        if ($depth >= self::MAX_DEPTH) {
+            return $value;
+        }
+        if ($value instanceof RawJson) {
+            $placeholder = "\u{E000}" . $token . count($raw) . "\u{E000}";
+            $raw['"' . $placeholder . '"'] = $value->json;
+
+            return $placeholder;
+        }
+        if ($value instanceof \JsonSerializable) {
+            return self::prepare($value->jsonSerialize(), $depth + 1, $nonFiniteAsText, $token, $raw);
+        }
+        if (is_array($value)) {
+            foreach ($value as $key => $item) {
+                $value[$key] = self::prepare($item, $depth + 1, $nonFiniteAsText, $token, $raw);
+            }
+
+            return $value;
+        }
+        // 枚举与闭包交给 json_encode：BackedEnum 写值，其余写不出
+        if (!is_object($value) || $value instanceof \UnitEnum || $value instanceof \Closure) {
+            return $value;
+        }
+        $copy = new \stdClass();
+        foreach (get_object_vars($value) as $key => $item) {
+            $copy->{$key} = self::prepare($item, $depth + 1, $nonFiniteAsText, $token, $raw);
+        }
+
+        return $copy;
     }
 
     /**

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Tests\Operation;
 
 use XiHan\Framework\Operation\Shape;
+use XiHan\Framework\Primitives\RawJson;
 
 /**
  * payload-reasons 向量的 profile 请求：带必填成员与各种取值。
@@ -25,7 +26,7 @@ final readonly class Profile
         public ?array $tags = null,
         public ?array $scores = null,
         public ?array $inner = null,
-        public mixed $meta = null,
+        public ?RawJson $meta = null,
     ) {
     }
 
@@ -53,7 +54,7 @@ final readonly class Profile
     public static function create(mixed $value): self
     {
         /** @var array{name: string|null, note?: string|null, count?: int, ratio?: float, flag?: bool,
-         *     tags?: list<string|null>|null, scores?: list<int>|null, inner?: array{n: int}|null, meta?: mixed} $value */
+         *     tags?: list<string|null>|null, scores?: list<int>|null, inner?: array{n: int}|null, meta?: RawJson|null} $value */
         return new self(
             $value['name'],
             $value['note'] ?? null,

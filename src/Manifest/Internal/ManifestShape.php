@@ -9,6 +9,7 @@ use XiHan\Framework\Manifest\Isolation;
 use XiHan\Framework\Manifest\Kind;
 use XiHan\Framework\Manifest\ManifestId;
 use XiHan\Framework\Manifest\Role;
+use XiHan\Framework\Primitives\Internal\JsonNode;
 use XiHan\Framework\Primitives\JsonPath;
 use XiHan\Framework\Primitives\OperationId;
 use XiHan\Framework\Primitives\PipelineStage;
@@ -17,7 +18,7 @@ use XiHan\Framework\Primitives\Stability;
 /**
  * 清单 JSON 的形状检查（RFC-0002 解析规则 2，ADR-0236）：照 manifest.schema.json 逐项核对，找出第一处问题的路径。
  *
- * 按成员在文本里出现的顺序检查（json_decode 的 stdClass 保留文本顺序），每个成员依次是 Schema 之外的成员、null、类型、
+ * 按成员在文本里出现的顺序检查（JsonReader 读出的树，以 U+0000 开头的成员名也照常报），每个成员依次是 Schema 之外的成员、null、类型、
  * 取值，对象与数组进到里面再查，数组项按下标顺序；一个对象的成员查完后按 Schema 的 required 顺序查缺少的成员，
  * 路径是缺少的成员本身。跨字段的约束（插件必须声明隔离、能力不得重复等）由 Manifest::validate() 在之后核对。
  *
@@ -38,11 +39,11 @@ final class ManifestShape
     }
 
     /**
-     * 返回清单 JSON（json_decode 的对象模式结果）不合 Schema 的第一处的路径；合 Schema 时为 null。
+     * 返回清单 JSON（JsonReader 读出的树）不合 Schema 的第一处的路径；合 Schema 时为 null。
      */
-    public static function findProblem(mixed $root): ?string
+    public static function findProblem(JsonNode $root): ?string
     {
-        return $root instanceof \stdClass
+        return $root->kind === JsonNode::OBJECT
             ? self::checkObject($root, self::$root ??= self::buildRoot(), JsonPath::ROOT)
             : JsonPath::ROOT;
     }
@@ -50,11 +51,11 @@ final class ManifestShape
     /**
      * @param ObjectShape $shape
      */
-    private static function checkObject(\stdClass $object, array $shape, string $path): ?string
+    private static function checkObject(JsonNode $object, array $shape, string $path): ?string
     {
-        $members = get_object_vars($object);
-        foreach ($members as $name => $value) {
-            $name = (string) $name;
+        $members = [];
+        foreach ($object->members() as [$name, $value]) {
+            $members[$name] = true;
             $memberPath = JsonPath::member($path, $name);
             $member = $shape['members'][$name] ?? null;
             if ($member === null) {
@@ -80,42 +81,44 @@ final class ManifestShape
      *
      * @param ValueShape $shape
      */
-    private static function checkValue(mixed $value, array $shape, string $path): ?string
+    private static function checkValue(JsonNode $value, array $shape, string $path): ?string
     {
-        if ($value === null) {
+        if ($value->kind === JsonNode::NULL) {
             return $path;
         }
         switch ($shape['kind']) {
             case 'string':
                 $accepts = $shape['accepts'] ?? null;
+                $text = $value->value;
 
-                return is_string($value) && ($accepts === null || $accepts($value)) ? null : $path;
+                return is_string($text) && ($accepts === null || $accepts($text)) ? null : $path;
             case 'bool':
-                return is_bool($value) ? null : $path;
+                return $value->kind === JsonNode::BOOL ? null : $path;
             case 'object':
                 /** @var ObjectShape $object */
                 $object = $shape['object'] ?? ['members' => [], 'required' => []];
 
-                return $value instanceof \stdClass ? self::checkObject($value, $object, $path) : $path;
+                return $value->kind === JsonNode::OBJECT ? self::checkObject($value, $object, $path) : $path;
         }
-        if (!is_array($value) || (($shape['nonEmpty'] ?? false) && $value === [])) {
+        $items = $value->items();
+        if ($value->kind !== JsonNode::ARRAY || (($shape['nonEmpty'] ?? false) && $items === [])) {
             return $path;
         }
         /** @var ValueShape $item */
         $item = $shape['item'] ?? ['kind' => 'string'];
         // 不得重复的字符串数组：先核对这一项本身，再看它是否与前面的项重复，重复时报第二次出现的位置
         $seen = [];
-        foreach (array_values($value) as $index => $element) {
+        foreach ($items as $index => $element) {
             $itemPath = JsonPath::index($path, $index);
             $problem = self::checkValue($element, $item, $itemPath);
             if ($problem !== null) {
                 return $problem;
             }
-            if (($shape['unique'] ?? false) && is_string($element)) {
-                if (isset($seen[$element])) {
+            if (($shape['unique'] ?? false) && is_string($element->value)) {
+                if (isset($seen[$element->value])) {
                     return $itemPath;
                 }
-                $seen[$element] = true;
+                $seen[$element->value] = true;
             }
         }
 

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Operation;
 
+use XiHan\Framework\Primitives\Internal\JsonNode;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonPath;
+use XiHan\Framework\Primitives\RawJson;
 
 /**
  * 请求载荷的形状：声明请求类型的每个成员，解码时按它核对（RFC-0011 规则 2，ADR-0236，照 System.Text.Json 的缺省读取选项）。
@@ -22,8 +24,10 @@ use XiHan\Framework\Primitives\JsonPath;
  * - 按文本顺序报第一处类型不符；嵌套对象里缺少的成员先于外层后面的类型不符。
  *
  * 交给创建函数的值：string 是 string、int32 / int64 是 int、float 是 float、bool 是 bool、listOf 是列表、mapOf 与 object 是以
- * 成员名为键的数组（object 只含声明过、出现了的成员；PHP 会把纯数字的键转成整数）、any 是 json_decode 的对象模式结果
- * （对象是 stdClass，空对象与空数组不混淆）；接受 null 的值为 null 时就是 null。
+ * 成员名为键的数组（object 只含声明过、出现了的成员；PHP 会把纯数字的键转成整数）、any 是 RawJson，原样保留读到的原文
+ * （`1e400`、超出双精度的整数与 `2.0` 写回时不变，decode() 取解码后的值）；接受 null 的值为 null 时就是 null。
+ *
+ * 载荷按 JsonReader 读，不经 stdClass：以 U+0000 开头的成员名照常核对。
  */
 final readonly class Shape
 {
@@ -96,7 +100,7 @@ final readonly class Shape
     }
 
     /**
-     * 任意 JSON，按 json_decode 的对象模式交出；接受 null。
+     * 任意 JSON，以 RawJson 原样交出读到的原文；接受 null。
      */
     public static function any(): self
     {
@@ -165,42 +169,43 @@ final readonly class Shape
     }
 
     /**
-     * 按形状核对 json_decode（对象模式）读出的值，核对过的值写进 `$out`。
+     * 按形状核对 JsonReader 读出的值，核对过的值写进 `$out`。
      *
      * @internal 由 Codec 调用。
      *
+     * @param string $text 载荷原文：任意 JSON 按原文保留
+     *
      * @return string|null 第一处问题的路径；合形状时为 null
      */
-    public function read(mixed $value, string $path, mixed &$out): ?string
+    public function read(JsonNode $node, string $path, string $text, mixed &$out): ?string
     {
         $out = null;
-        if ($value === null) {
+        if ($node->kind === JsonNode::NULL) {
             return $this->nullable || in_array($this->kind, self::NULLABLE_KINDS, true) ? null : $path;
         }
+        $value = $node->value;
 
         return match ($this->kind) {
-            self::STRING => is_string($value) ? self::accept($value, $out) : $path,
+            self::STRING => $node->kind === JsonNode::STRING ? self::accept($value, $out) : $path,
             self::INT32 => is_int($value) && $value >= self::INT32_MIN && $value <= self::INT32_MAX
                 ? self::accept($value, $out)
                 : $path,
             self::INT64 => is_int($value) ? self::accept($value, $out) : $path,
-            self::FLOAT => is_int($value) || is_float($value) ? self::accept((float) $value, $out) : $path,
+            self::FLOAT => $node->kind === JsonNode::NUMBER ? self::accept((float) $value, $out) : $path,
             self::BOOL => is_bool($value) ? self::accept($value, $out) : $path,
-            self::ANY => self::accept($value, $out),
-            self::LIST => is_array($value) ? $this->readList($value, $path, $out) : $path,
-            self::MAP => $value instanceof \stdClass ? $this->readMap($value, $path, $out) : $path,
-            default => $value instanceof \stdClass ? $this->readObject($value, $path, $out) : $path,
+            // 任意 JSON 原样保留读到的原文：1e400、超出双精度的整数与 2.0 写回时不变（ADR-0236）
+            self::ANY => self::accept(RawJson::checked($node->raw($text)), $out),
+            self::LIST => $node->kind === JsonNode::ARRAY ? $this->readList($node, $path, $text, $out) : $path,
+            self::MAP => $node->kind === JsonNode::OBJECT ? $this->readMap($node, $path, $text, $out) : $path,
+            default => $node->kind === JsonNode::OBJECT ? $this->readObject($node, $path, $text, $out) : $path,
         };
     }
 
-    /**
-     * @param array<array-key, mixed> $value
-     */
-    private function readList(array $value, string $path, mixed &$out): ?string
+    private function readList(JsonNode $node, string $path, string $text, mixed &$out): ?string
     {
         $items = [];
-        foreach (array_values($value) as $index => $item) {
-            $problem = $this->itemShape()->read($item, JsonPath::index($path, $index), $read);
+        foreach ($node->items() as $index => $item) {
+            $problem = $this->itemShape()->read($item, JsonPath::index($path, $index), $text, $read);
             if ($problem !== null) {
                 return $problem;
             }
@@ -211,13 +216,11 @@ final readonly class Shape
         return null;
     }
 
-    private function readMap(\stdClass $value, string $path, mixed &$out): ?string
+    private function readMap(JsonNode $node, string $path, string $text, mixed &$out): ?string
     {
         $members = [];
-        foreach (get_object_vars($value) as $name => $item) {
-            // PHP 把纯数字的成员名转成整数键，路径里按原来的字符串写
-            $name = (string) $name;
-            $problem = $this->itemShape()->read($item, JsonPath::member($path, $name), $read);
+        foreach ($node->members() as [$name, $item]) {
+            $problem = $this->itemShape()->read($item, JsonPath::member($path, $name), $text, $read);
             if ($problem !== null) {
                 return $problem;
             }
@@ -228,16 +231,15 @@ final readonly class Shape
         return null;
     }
 
-    private function readObject(\stdClass $value, string $path, mixed &$out): ?string
+    private function readObject(JsonNode $node, string $path, string $text, mixed &$out): ?string
     {
         $members = [];
-        foreach (get_object_vars($value) as $name => $item) {
-            $name = (string) $name;
+        foreach ($node->members() as [$name, $item]) {
             $member = $this->members[$name] ?? null;
             if ($member === null) {
                 continue;
             }
-            $problem = $member->read($item, JsonPath::member($path, $name), $read);
+            $problem = $member->read($item, JsonPath::member($path, $name), $text, $read);
             if ($problem !== null) {
                 return $problem;
             }

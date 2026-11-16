@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace XiHan\Framework\Operation;
 
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\Internal\JsonNode;
+use XiHan\Framework\Primitives\Internal\JsonReader;
 use XiHan\Framework\Primitives\Internal\Json;
 use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\InvalidArgumentException;
@@ -132,13 +134,9 @@ final readonly class Codec
         if ($problem !== null) {
             return Result::fail(OperationErrors::invalidPayload($id, $problem->path));
         }
-        try {
-            $decoded = json_decode($payload, false, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
-            // 检查已通过：只剩 stdClass 表示不了的成员名（以 U+0000 开头）
-            return Result::fail(OperationErrors::invalidPayload($id, JsonPath::ROOT));
-        }
-        if (!$decoded instanceof \stdClass) {
+        // 不经 stdClass 读：以 U+0000 开头的成员名照常核对，任意 JSON 按原文保留
+        $root = JsonReader::parse($payload);
+        if ($root->kind !== JsonNode::OBJECT) {
             return Result::fail(OperationErrors::invalidPayload($id, JsonPath::ROOT));
         }
         if ($this->shape === null) {
@@ -147,7 +145,7 @@ final readonly class Codec
 
             return Result::ok(($this->create)($object));
         }
-        $path = $this->shape->read($decoded, JsonPath::ROOT, $value);
+        $path = $this->shape->read($root, JsonPath::ROOT, $payload, $value);
         if ($path !== null) {
             return Result::fail(OperationErrors::invalidPayload($id, $path));
         }

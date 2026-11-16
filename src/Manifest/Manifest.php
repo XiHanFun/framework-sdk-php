@@ -11,6 +11,8 @@ use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\Internal\Json;
+use XiHan\Framework\Primitives\Internal\JsonNode;
+use XiHan\Framework\Primitives\Internal\JsonReader;
 use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonPath;
@@ -128,21 +130,17 @@ final readonly class Manifest implements \JsonSerializable
         if ($problem !== null) {
             throw self::invalid(KernelMessages::MANIFEST_INVALID_JSON, ['reason' => $problem->path]);
         }
-        try {
-            $root = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
-        } catch (\JsonException) {
-            // 检查已通过：只剩 stdClass 表示不了的成员名（以 U+0000 开头），它不是 Schema 里的成员
-            throw self::invalid(KernelMessages::MANIFEST_INVALID, ['reason' => JsonPath::ROOT]);
-        }
-        if ($root === null) {
+        // 按 JsonReader 读出的树核对形状：以 U+0000 开头的成员名也按 Schema 之外的成员报出路径
+        $root = JsonReader::parse($json);
+        if ($root->kind === JsonNode::NULL) {
             throw self::invalid(KernelMessages::MANIFEST_EMPTY, []);
         }
         $path = ManifestShape::findProblem($root);
         if ($path !== null) {
             throw self::invalid(KernelMessages::MANIFEST_INVALID, ['reason' => $path]);
         }
-        // 形状已核对：读取与格式校验不会再失败，失败即两处规则不一致
-        $manifest = self::fromFields(Fields::of($root, JsonPath::ROOT));
+        // 形状已核对：成员都是 Schema 里的，stdClass 放得下；读取与格式校验不会再失败，失败即两处规则不一致
+        $manifest = self::fromFields(Fields::of(json_decode($json, false, 512, JSON_THROW_ON_ERROR), JsonPath::ROOT));
         $error = $manifest->validate()->error();
         if ($error !== null) {
             throw ConfigurationException::fromError($error->withCode(self::ERROR_CODE_INVALID));

@@ -13,7 +13,9 @@ use XiHan\Framework\Operation\OperationErrors;
 use XiHan\Framework\Operation\Registry;
 use XiHan\Framework\Operation\Request;
 use XiHan\Framework\Operation\Shape;
+use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonPath;
+use XiHan\Framework\Primitives\RawJson;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Tests\Vectors;
 
@@ -64,13 +66,34 @@ final class PayloadReasonsTest extends TestCase
         self::assertSame(5.0, $profile->ratio, 'floats accept integer literals');
         self::assertSame(['x', null], $profile->tags);
         self::assertSame(['n' => 0], $profile->inner);
-        self::assertEquals((object) ['a' => [], 'b' => new \stdClass()], $profile->meta, 'any JSON keeps {} and []');
+        self::assertInstanceOf(RawJson::class, $profile->meta);
+        self::assertSame('{"a":[],"b":{}}', $profile->meta->json, 'any JSON keeps the text it read');
+        self::assertEquals((object) ['a' => [], 'b' => new \stdClass()], $profile->meta->decode(), 'decode() keeps {} and []');
         self::assertSame(PHP_INT_MAX, $profile->count);
         self::assertTrue($profile->flag);
         self::assertSame(INF, $codec->decode('p', '{"name":"a","ratio":1e400}')->valueOrThrow()->ratio);
         $nullable = Codec::typed(Profile::class, Shape::object(['count' => Shape::int64()->nullable()]), static fn (mixed $value): Profile => new Profile(null), 'mixed');
         self::assertTrue($nullable->decode('p', '{"count":null}')->isOk(), 'nullable() accepts null');
         self::assertTrue(Codec::typed(Counts::class, Counts::shape(), Counts::create(...), 'array')->decode('c', '')->isOk(), 'an empty payload is {}');
+    }
+
+    public function testAnyJsonIsWrittenBackAsItWasRead(): void
+    {
+        // 任意 JSON 原样保留读到的值：1e400 不变成无穷或 null，超出双精度的整数精确，2.0 与 2 的区别保留（RFC-0011 规则 2）
+        $registry = new Registry();
+        $registry->add(
+            new Contract('profiles.echo'),
+            static fn (Context $context, Profile $request): Result => Result::ok(['meta' => $request->meta]),
+            Codec::typed(Profile::class, Profile::shape(), Profile::create(...), 'array'),
+        );
+        $meta = '{"big":1e400,"tiny":1e-400,"n":9007199254740993,"f":2.0,"i":2,"z":-0.0,"s":"é","a":[1E+17,{"k":null}]}';
+        $response = (new Invoker($registry))->invoke(Context::create(), new Request('profiles.echo', '{"name":"a","meta":' . $meta . '}'));
+        self::assertTrue($response->outcome->isOk(), (string) $response->outcome);
+        self::assertSame('{"meta":' . $meta . '}', $response->payload);
+        // Result 的线上编码同样原样放回
+        self::assertSame('{"ok":true,"value":' . $meta . '}', Result::ok(RawJson::of($meta))->toJson());
+        $this->expectException(InvalidArgumentException::class);
+        RawJson::of('{"a":1,"a":2}');
     }
 
     public function testPathsQuoteOnlyTheListedCharacters(): void
