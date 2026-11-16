@@ -104,10 +104,11 @@ final class PipelineBuilderTest extends TestCase
             ->before('A', 'B');
         self::assertCode($crossStage, PipelineBuilder::ERROR_CODE_REGISTRATION);
 
-        $duplicate = (new PipelineBuilder())
-            ->useAt(Recorder::passThrough('A'), PipelineStage::Validate)
-            ->useAt(Recorder::passThrough('A'), PipelineStage::Validate);
-        self::assertCode($duplicate, PipelineBuilder::ERROR_CODE_REGISTRATION);
+        // 重复登记在登记时立即报
+        $duplicate = (new PipelineBuilder())->useAt(Recorder::passThrough('A'), PipelineStage::Validate);
+        self::assertImmediate(
+            static fn (): mixed => $duplicate->useAt(Recorder::passThrough('A'), PipelineStage::Validate),
+        );
 
         try {
             PipelineBuilder::parseStage('middle');
@@ -127,13 +128,29 @@ final class PipelineBuilderTest extends TestCase
         self::assertSame("observe      Guard[guard-a]\nobserve      Guard[guard-b]\n", $builder->dump());
         self::assertSame('guard-a', $builder->describe()[0]->instance);
 
-        $builder->useAt(Recorder::passThrough('Other'), PipelineStage::Observe)->before('Guard', 'Other');
+        // 按中间件名约束有多个实例的主体：声明时就有歧义，立即报；作为目标则在排序时报
+        $builder->useAt(Recorder::passThrough('Other'), PipelineStage::Observe);
+        self::assertImmediate(static fn (): mixed => $builder->before('Guard', 'Other'));
+        $builder->before('Other', 'Guard');
         self::assertCode($builder, PipelineBuilder::ERROR_CODE_REGISTRATION);
 
-        $duplicate = (new PipelineBuilder())
-            ->useNamedInstance('x', Recorder::passThrough('Guard'), PipelineStage::Observe)
-            ->useNamedInstance('x', Recorder::passThrough('Guard'), PipelineStage::Observe);
-        self::assertCode($duplicate, PipelineBuilder::ERROR_CODE_REGISTRATION);
+        $duplicate = (new PipelineBuilder())->useNamedInstance('x', Recorder::passThrough('Guard'), PipelineStage::Observe);
+        self::assertImmediate(
+            static fn (): mixed => $duplicate->useNamedInstance('x', Recorder::passThrough('Guard'), PipelineStage::Observe),
+        );
+    }
+
+    /**
+     * @param \Closure(): mixed $action
+     */
+    private static function assertImmediate(\Closure $action): void
+    {
+        try {
+            $action();
+            self::fail('the registration must be rejected immediately');
+        } catch (ConfigurationException $exception) {
+            self::assertSame(PipelineBuilder::ERROR_CODE_REGISTRATION, $exception->errorCode());
+        }
     }
 
     public function testConstraintsMayNameInstances(): void

@@ -19,8 +19,10 @@ use XiHan\Framework\Primitives\Unit;
  * 最后按 before / after 约束做稳定拓扑排序——约束只调整必要的相对位置，其余保持基准次序。
  *
  * 次序约束的两端都是中间件名（RFC-0004 排序规则 7）：按名字登记的实例名，或只登记一次、没有实例名的中间件名。
- * 中间件名有多个实例时按它约束有歧义，改用实例名。约束主体（被约束的那一个）在声明时必须已登记；
- * 目标在 describe / dump / build 时才解析，未登记、有歧义或不在同一阶段报 KERNEL_PIPELINE_003。
+ * 中间件名有多个实例时按它约束有歧义，改用实例名。
+ *
+ * 报错的时机照 .NET（RFC-0004 排序规则 8）：重复登记、未知阶段（parseStage）、约束主体未登记或按名字有歧义在登记或
+ * 声明时立即报；约束目标未登记、有歧义或不在同一阶段，以及约束成环，在 describe / dump / build 排序时报。
  * 运行期的成组登记与按归属撤回是宿主能力，本 SDK 不提供（RFC-0004「运行期改动」）。
  */
 final class PipelineBuilder
@@ -204,6 +206,14 @@ final class PipelineBuilder
             ));
         }
         $descriptor = new MiddlewareDescriptor($stage, $name, $instance, $owner, $placement);
+        // 重复登记在登记时立即报（RFC-0004 排序规则 8）：同一中间件的默认实例只登记一次，实例名在中间件名内唯一
+        foreach ($this->registrations as $registration) {
+            if ($registration->descriptor->middleware === $name && $registration->descriptor->instance === $instance) {
+                throw self::registrationError(
+                    sprintf("The middleware '%s' is registered more than once.", $descriptor->display()),
+                );
+            }
+        }
         $this->registrations[] = new Registration($middleware, $descriptor, count($this->registrations));
 
         return $this;
@@ -216,8 +226,7 @@ final class PipelineBuilder
      */
     private function sorted(): array
     {
-        $this->checkDuplicates();
-        // 约束按名字引用：未登记、有歧义、跨阶段都是登记错误
+        // 约束按名字引用：目标未登记、有歧义、跨阶段都是登记错误，在排序时才报
         $resolved = [];
         foreach ($this->constraints as [$first, $second]) {
             $before = $this->resolve($first);
@@ -249,29 +258,14 @@ final class PipelineBuilder
     }
 
     /**
-     * 核对同一中间件的默认实例只登记一次、命名实例的名字在中间件名内唯一。
-     */
-    private function checkDuplicates(): void
-    {
-        $seen = [];
-        foreach ($this->registrations as $registration) {
-            $key = $registration->descriptor->middleware . "\0" . ($registration->descriptor->instance ?? '');
-            if (isset($seen[$key])) {
-                throw self::registrationError(
-                    sprintf("The middleware '%s' is registered more than once.", $registration->descriptor->display()),
-                );
-            }
-            $seen[$key] = true;
-        }
-    }
-
-    /**
-     * 核对约束主体已登记：名字是某个实例名，或某个中间件名。
+     * 核对约束主体在声明时已登记、按名字没有歧义（RFC-0004 排序规则 7、8）；不合即立即报。
      */
     private function requireSubject(string $name): void
     {
         foreach ($this->registrations as $registration) {
             if ($registration->descriptor->instance === $name || $registration->descriptor->middleware === $name) {
+                $this->resolve($name);
+
                 return;
             }
         }

@@ -32,6 +32,16 @@ final class Recorder
     }
 
     /**
+     * 什么都不做的终点。
+     *
+     * @return Result<\XiHan\Framework\Primitives\Unit>
+     */
+    public static function terminal(Context $context): Result
+    {
+        return Result::success();
+    }
+
+    /**
      * 返回一个直接放行的中间件，只用于排序。
      */
     public static function passThrough(string $name): Middleware
