@@ -7,6 +7,7 @@ namespace XiHan\Framework\Tests;
 use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Invocation\CancellationReason;
 use XiHan\Framework\Invocation\Context;
+use XiHan\Framework\Manifest\Manifest;
 use XiHan\Framework\Operation\Contract;
 use XiHan\Framework\Operation\Invoker;
 use XiHan\Framework\Operation\Registry;
@@ -44,10 +45,6 @@ final class KernelMessagesTest extends TestCase
             self::assertSame($message['arguments'], MessageTemplate::placeholdersOf($message['template']), $key);
         }
         foreach (array_keys(KernelMessages::englishTemplates()) as $key) {
-            // 清单读取的键不在共用表里（RFC-0002 解析规则 2），模板取自 .NET 的 en-US 语言文件
-            if (str_starts_with($key, 'kernel.manifest.') || str_starts_with($key, 'primitives.manifest.')) {
-                continue;
-            }
             self::assertContains($key, $keys, sprintf('%s is not in the shared table', $key));
         }
     }
@@ -139,6 +136,31 @@ final class KernelMessagesTest extends TestCase
                 }
                 self::fail('a duplicate must be rejected');
             },
+            // 清单读取的错误：码都是 KERNEL_CAPABILITY_006，message 是模板格式化后的英文句子（ADR-0236）
+            KernelMessages::MANIFEST_INVALID_JSON => static fn (): Error => self::manifestError('{'),
+            KernelMessages::MANIFEST_EMPTY => static fn (): Error => self::manifestError('null'),
+            KernelMessages::MANIFEST_FILE_MISSING => static function (): Error {
+                try {
+                    Manifest::readFile(sys_get_temp_dir() . '/xihan-missing/' . Manifest::FILE_NAME);
+                } catch (ConfigurationException $exception) {
+                    return $exception->toError();
+                }
+                self::fail('a missing manifest file must be rejected');
+            },
+            KernelMessages::MANIFEST_INVALID => static fn (): Error => self::manifestError('{"id":5}'),
+            KernelMessages::MANIFEST_ISOLATION_REQUIRED => static fn (): Error => self::manifestError(self::manifest('"kind":"plugin"')),
+            KernelMessages::MANIFEST_ISOLATION_NOT_ALLOWED => static fn (): Error => self::manifestError(
+                self::manifest('"kind":"capability","isolation":"wasm"'),
+            ),
+            KernelMessages::MANIFEST_DUPLICATE_PROVIDES => static fn (): Error => self::manifestError(
+                self::manifest('"kind":"capability","provides":[{"id":"a.b","version":"1"},{"id":"a.b","version":"2"}]'),
+            ),
+            KernelMessages::MANIFEST_DUPLICATE_REQUIRES => static fn (): Error => self::manifestError(
+                self::manifest('"kind":"capability","requires":[{"id":"a.b","version":"1"},{"id":"a.b","version":"^1"}]'),
+            ),
+            KernelMessages::MANIFEST_DUPLICATE_BINDINGS => static fn (): Error => self::manifestError(
+                self::manifest('"kind":"capability","bindings":[{"name":"db","type":"queue"},{"name":"db","type":"blob"}]'),
+            ),
             KernelMessages::OPERATION_REGISTRY_FULL => static function () use ($handler): Error {
                 $full = new Registry();
                 for ($index = 0; $index < Registry::CAPACITY; $index++) {
@@ -152,6 +174,21 @@ final class KernelMessagesTest extends TestCase
                 self::fail('a full registry must reject');
             },
         ];
+    }
+
+    private static function manifest(string $members): string
+    {
+        return '{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable",' . $members . '}';
+    }
+
+    private static function manifestError(string $json): Error
+    {
+        try {
+            Manifest::read($json);
+        } catch (ConfigurationException $exception) {
+            return $exception->toError();
+        }
+        self::fail(sprintf('%s must be rejected', $json));
     }
 
     /**
