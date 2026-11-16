@@ -298,6 +298,44 @@ final class InvokerTest extends TestCase
         self::assertSame('ORDERS_DENIED_001', $invoker->invoke(Context::create(), new Request('orders.get'))->outcome->error()?->code);
     }
 
+    public function testExpiredDeadlinesEndTheCallBeforeTheFirstMiddleware(): void
+    {
+        $registry = new Registry();
+        $calls = [];
+        $registry->add(new Contract('orders.get'), static function (Context $context, array $request) use (&$calls): Result {
+            $calls[] = 'handler';
+
+            return Result::ok(['id' => 'o1']);
+        });
+        $invoker = new Invoker($registry, (new PipelineBuilder())->useAt(
+            new ClosureMiddleware('Observe', static function (Context $context, \Closure $next) use (&$calls): Result {
+                $calls[] = 'middleware';
+
+                return $next($context);
+            }),
+            PipelineStage::Observe,
+        ));
+        $clock = new \XiHan\Framework\Tests\Invocation\ManualClock();
+        // 构造上下文时不判断截止时间：已过期的上下文照样建得出来
+        $expired = Context::create(timeout: 0.0, clock: $clock);
+        $errors = [
+            $invoker->invoke($expired, new Request('orders.get'))->outcome->error(),
+            $invoker->invokeTyped($expired, 'orders.get', [], 'mixed')->error(),
+        ];
+        foreach ($errors as $error) {
+            self::assertNotNull($error);
+            self::assertSame('KERNEL_TIMEOUT_001', $error->code);
+            self::assertSame('kernel.invocation.deadline_before_start', $error->messageKey);
+            self::assertSame([], $error->details);
+        }
+        self::assertSame([], $calls, 'neither middleware nor handler runs');
+
+        $live = Context::create(timeout: 1.0, clock: $clock);
+        self::assertSame('{"id":"o1"}', $invoker->invoke($live, new Request('orders.get'))->payload);
+        self::assertSame(['middleware', 'handler'], $calls);
+        self::assertSame('KERNEL_NOTFOUND_001', $invoker->invoke($expired, new Request('orders.missing'))->outcome->error()?->code);
+    }
+
     public function testThrownExceptionsBecomeUnexpectedErrors(): void
     {
         $registry = new Registry();

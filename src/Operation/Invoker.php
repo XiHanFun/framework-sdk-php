@@ -42,6 +42,7 @@ final class Invoker
     /**
      * 执行一个 XGI 请求：未登记返回 KERNEL_NOTFOUND_001（不进管道）；否则经完整管道执行。
      *
+     * 调用开始时截止时间已过返回 KERNEL_TIMEOUT_001 + kernel.invocation.deadline_before_start，管道不执行；
      * 管道以成功结束而没有响应载荷时返回 KERNEL_UNEXPECTED_001 + kernel.operation.no_response（规则 9）；
      * 管道里抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5）。
      */
@@ -74,7 +75,7 @@ final class Invoker
      * 类型化入口：不经 JSON，直接以请求对象经完整管道执行。
      *
      * 请求不是登记的请求类型、或期望的响应类型与登记不符时返回 KERNEL_VALIDATION_002；未登记返回 KERNEL_NOTFOUND_001；
-     * 没有产出响应与抛出的异常同 invoke()。
+     * 截止时间已过、没有产出响应与抛出的异常同 invoke()。
      *
      * @param string $responseType 期望的响应类型名，与登记的 Codec 一致（Codec::json() 为 mixed）
      *
@@ -116,12 +117,16 @@ final class Invoker
     }
 
     /**
-     * 执行管道；抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5），不传给调用方。
+     * 执行管道；截止时间已过时不执行，抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5），不传给调用方。
      *
      * @return Result<Unit>
      */
     private function run(Context $context): Result
     {
+        // 本 SDK 没有截止时间中间件：由调用器在第一个中间件之前按时钟核对，已到即结束、管道不执行（RFC-0011 规则 10）
+        if ($context->isExpired($context->clock()->now())) {
+            return Result::fail(OperationErrors::deadlineBeforeStart());
+        }
         try {
             return ($this->step)($context);
         } catch (\Throwable $exception) {

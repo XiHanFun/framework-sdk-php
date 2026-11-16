@@ -54,7 +54,7 @@ final class KernelMessagesTest extends TestCase
         foreach (self::messages() as $message) {
             $producer = $producers[$message['key']] ?? null;
             if ($producer === null) {
-                // 本 SDK 不产生的（未初始化的结果、调用前已过截止时间）只核对模板
+                // 本 SDK 不产生的（未初始化的结果：PHP 的 Result 只能经工厂创建）只核对模板
                 continue;
             }
             $error = $producer();
@@ -106,6 +106,10 @@ final class KernelMessagesTest extends TestCase
 
         return [
             KernelMessages::DEADLINE_EXCEEDED => static fn (): Error => CancellationReason::DeadlineExceeded->toError(),
+            KernelMessages::DEADLINE_BEFORE_START => static fn (): Error => self::failure($invoker->invoke(
+                Context::create(deadline: new \DateTimeImmutable('2000-01-01T00:00:00Z')),
+                new Request('orders.create'),
+            )->outcome),
             KernelMessages::CANCELLED => static fn (): Error => CancellationReason::Cancelled->toError(),
             KernelMessages::OPERATION_UNKNOWN => static fn (): Error => self::failure(
                 $invoker->invoke(Context::create(), new Request('orders.missing'))->outcome,

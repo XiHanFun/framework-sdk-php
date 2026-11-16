@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Operation;
 
+use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\FrameworkException;
 use XiHan\Framework\Primitives\KernelMessages;
@@ -92,6 +93,14 @@ final class OperationErrors
     public static function noResponse(string $id): Error
     {
         return Error::unexpected(self::UNEXPECTED, KernelMessages::OPERATION_NO_RESPONSE, ['id' => $id]);
+    }
+
+    /**
+     * 调用开始时截止时间已过：KERNEL_TIMEOUT_001 + kernel.invocation.deadline_before_start，没有参数（RFC-0011 规则 10）。
+     */
+    public static function deadlineBeforeStart(): Error
+    {
+        return Error::timeout(Context::ERROR_CODE_DEADLINE_EXCEEDED, KernelMessages::DEADLINE_BEFORE_START);
     }
 
     /**
