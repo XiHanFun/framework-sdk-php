@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Operation;
 
+use XiHan\Framework\Invocation\CancellationReason;
 use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Pipeline\ClosureMiddleware;
 use XiHan\Framework\Pipeline\PipelineBuilder;
@@ -21,8 +22,11 @@ use XiHan\Framework\Primitives\Unit;
  *
  * - Observe 阶段的 ObserveMiddleware：把排在它之后的中间件与处理函数抛出的异常翻译为 KERNEL_UNEXPECTED_001（规则 5）；
  *   排在它之前的（Ingress 阶段，或 Observe 阶段 Beginning 上归属排在 xihan.kernel.core 之前的，如 app）抛出的异常原样
- *   交给调用方。
+ *   交给调用方。取消异常（amphp 的 Amp\CancelledException）不在这里翻译，交给截止时间步骤归因。
  * - Resilience 阶段的 DeadlineMiddleware：进入时截止时间已到即以 KERNEL_TIMEOUT_001 结束，后面的不执行；不核对取消。
+ *   途中的取消按 RFC-0003 第 1 条归因：下游抛出取消异常、或把取消写成 KERNEL_CANCELLED_001 的结果时，截止时间已到即
+ *   KERNEL_TIMEOUT_001 + kernel.invocation.deadline_exceeded，否则调用方已取消即 KERNEL_CANCELLED_001；两个都没有触发的
+ *   取消异常原样抛给调用方。取消只经令牌通知，调用器不强行中止中间件或处理函数，令牌触发后照常返回的结果就是调用的结果。
  * - Validate 阶段的 ValidationMiddleware：原始调用在这里把载荷解码成请求，失败即以 KERNEL_VALIDATION_001 结束；
  *   类型化调用跳过。
  *
@@ -44,6 +48,8 @@ final class Invoker
     /** Validate 阶段的解码步骤的中间件名。 */
     public const string VALIDATION_MIDDLEWARE = 'ValidationMiddleware';
 
+    /** 按取消归因的异常：amphp 的取消异常（不依赖 amphp，类不存在时不匹配） */
+    private const string CANCELLED_EXCEPTION = 'Amp\CancelledException';
 
     /** @var \Closure(Context): Result<Unit> */
     private readonly \Closure $step;
@@ -190,6 +196,11 @@ final class Invoker
         try {
             return $next($context);
         } catch (\Throwable $exception) {
+            // 取消不在这里翻译：由截止时间步骤区分超时与调用方取消（RFC-0003 第 1 条）
+            if (self::isCancellation($exception)) {
+                throw $exception;
+            }
+
             return Result::fail(OperationErrors::unhandledException($exception));
         }
     }
@@ -206,8 +217,47 @@ final class Invoker
         if ($context->isExpired($context->clock()->now())) {
             return Result::fail(OperationErrors::deadlineBeforeStart());
         }
+        try {
+            $outcome = $next($context);
+        } catch (\Throwable $exception) {
+            if (!self::isCancellation($exception)) {
+                throw $exception;
+            }
+            // 截止时间已到即超时，调用方同时取消也一样；只有调用方取消才是取消；两个都没有触发的取消不归调用器
+            if (self::deadlineReached($context)) {
+                return Result::fail(CancellationReason::DeadlineExceeded->toError());
+            }
+            if ($context->cancellation()->isRequested()) {
+                return Result::fail(CancellationReason::Cancelled->toError());
+            }
 
-        return $next($context);
+            throw $exception;
+        }
+        // 下游把取消写成了结果：截止时间已到就按超时报告，与抛出的路径同一规则（RFC-0004「行为变化」）
+        if ($outcome->error()?->code === Context::ERROR_CODE_CANCELLED && self::deadlineReached($context)) {
+            return Result::fail(CancellationReason::DeadlineExceeded->toError());
+        }
+
+        return $outcome;
+    }
+
+    /**
+     * 判断异常是不是取消：amphp 的 Amp\CancelledException（含子类）。
+     */
+    private static function isCancellation(\Throwable $exception): bool
+    {
+        $class = self::CANCELLED_EXCEPTION;
+
+        return $exception instanceof $class;
+    }
+
+    /**
+     * 判断截止时间是否已到：按上下文的时钟，或令牌已按截止时间触发。
+     */
+    private static function deadlineReached(Context $context): bool
+    {
+        return $context->isExpired($context->clock()->now())
+            || $context->cancellation()->reason() === CancellationReason::DeadlineExceeded;
     }
 
     /**
