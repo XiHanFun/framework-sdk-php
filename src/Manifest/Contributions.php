@@ -18,10 +18,8 @@ use XiHan\Framework\Primitives\OperationId;
 final readonly class Contributions implements \JsonSerializable
 {
     /** 权限码文法（RFC-0008） */
-    private const string PERMISSION_CODE_PATTERN = '/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/D';
 
     /** 健康项文法，约定 <领域>.<机制>.<对象> */
-    private const string HEALTH_PATTERN = '/^[a-z][a-z0-9.-]*$/D';
 
     /** @var list<PipelineContribution> */
     public array $pipeline;
@@ -67,7 +65,7 @@ final readonly class Contributions implements \JsonSerializable
         // 这里同样拒绝，不让它等到宿主那里才失败
         $this->permissions = Checks::strings($permissions, 'contributes.permissions');
         foreach ($this->permissions as $code) {
-            if (preg_match(self::PERMISSION_CODE_PATTERN, $code) !== 1) {
+            if (!Checks::matches(Checks::PERMISSION_CODE_PATTERN, $code)) {
                 throw new InvalidArgumentException(sprintf(
                     "The permission code '%s' in 'contributes.permissions' must be a lowercase dot-separated code "
                     . "with at least two segments, such as 'orders.read'.",
@@ -83,7 +81,7 @@ final readonly class Contributions implements \JsonSerializable
         }
         $this->health = Checks::strings($health, 'contributes.health');
         foreach ($this->health as $item) {
-            if (preg_match(self::HEALTH_PATTERN, $item) !== 1) {
+            if (!Checks::matches(Checks::HEALTH_PATTERN, $item)) {
                 throw new InvalidArgumentException(
                     sprintf("The health item '%s' in 'contributes.health' must match ^[a-z][a-z0-9.-]*$.", $item),
                 );
@@ -92,26 +90,19 @@ final readonly class Contributions implements \JsonSerializable
     }
 
     /**
-     * 返回线上编码：字段按 Schema 顺序，空列表与空配置节省略；什么都没有时是空对象。
+     * 返回线上编码，成员顺序同清单写出（RFC-0002「写出」）：列表总写，没有配置节时不写 config。
+     *
+     * @return array{pipeline: list<PipelineContribution>, operations: list<string>, config?: ConfigContribution,
+     *     permissions: list<string>, health: list<string>}
      */
-    public function jsonSerialize(): \stdClass
+    public function jsonSerialize(): array
     {
-        $wire = new \stdClass();
-        if ($this->pipeline !== []) {
-            $wire->pipeline = $this->pipeline;
-        }
-        if ($this->operations !== []) {
-            $wire->operations = $this->operations;
-        }
+        $wire = ['pipeline' => $this->pipeline, 'operations' => $this->operations];
         if ($this->config !== null) {
-            $wire->config = $this->config;
+            $wire['config'] = $this->config;
         }
-        if ($this->permissions !== []) {
-            $wire->permissions = $this->permissions;
-        }
-        if ($this->health !== []) {
-            $wire->health = $this->health;
-        }
+        $wire['permissions'] = $this->permissions;
+        $wire['health'] = $this->health;
 
         return $wire;
     }

@@ -44,6 +44,10 @@ final class KernelMessagesTest extends TestCase
             self::assertSame($message['arguments'], MessageTemplate::placeholdersOf($message['template']), $key);
         }
         foreach (array_keys(KernelMessages::englishTemplates()) as $key) {
+            // 清单读取的键不在共用表里（RFC-0002 解析规则 2），模板取自 .NET 的 en-US 语言文件
+            if (str_starts_with($key, 'kernel.manifest.') || str_starts_with($key, 'primitives.manifest.')) {
+                continue;
+            }
             self::assertContains($key, $keys, sprintf('%s is not in the shared table', $key));
         }
     }

@@ -6,36 +6,43 @@ namespace XiHan\Framework\Manifest;
 
 use XiHan\Framework\Manifest\Internal\Checks;
 use XiHan\Framework\Manifest\Internal\Fields;
+use XiHan\Framework\Manifest\Internal\ManifestShape;
 use XiHan\Framework\Primitives\ConfigurationException;
+use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\ErrorCode;
-use XiHan\Framework\Primitives\Internal\Duplicates;
-use XiHan\Framework\Primitives\Internal\Values;
+use XiHan\Framework\Primitives\Internal\Json;
+use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\JsonPath;
+use XiHan\Framework\Primitives\KernelMessages;
 use XiHan\Framework\Primitives\PipelineStage;
+use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Stability;
+use XiHan\Framework\Primitives\Unit;
 
 /**
  * 一份 `xihan.manifest.json`（RFC-0002，Schema 见 spec/manifest/manifest.schema.json）。
  *
- * 只做数据与格式校验，构造即校验：格式与跨字段约束不合的清单建不出来。收集、解析与求解是宿主的职责。
- * 跨字段约束：插件必须声明隔离，非插件不得声明隔离或权限，只有 Wasm 插件可以贡献中间件，提供、依赖与绑定不得重复。
+ * 只做数据与格式校验，收集、解析与求解是宿主的职责。构造时核对单个字段的格式，字段之间的约束由 validate() 核对：
+ * 插件必须声明隔离，非插件不得声明隔离或权限，提供、依赖与绑定不得重复。read() 两样都核对。
+ * 只有 Wasm 插件能贡献中间件，这一条由宿主在发现插件时核对（PLUGINS_VALIDATION_001），读取清单时不核对。
  */
 final readonly class Manifest implements \JsonSerializable
 {
     /** 清单文件名。 */
     public const string FILE_NAME = 'xihan.manifest.json';
 
-    /** 版本文法：SemVer 2.0 */
-    private const string SEMVER_PATTERN = '/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/D';
+    /** 清单读取失败的错误码（RFC-0002 解析规则 2）。 */
+    public const string ERROR_CODE_INVALID = 'KERNEL_CAPABILITY_006';
 
-    /** 激活事件文法 */
-    private const string ACTIVATION_PATTERN = '/^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9.*-]+)$/D';
-
-    /** 插件所需权限的文法 */
-    private const string PERMISSION_PATTERN = '/^(net\.outbound|fs\.read|fs\.write|capability):.+$/D';
+    /** 写出的 `$schema`。 */
+    public const string SCHEMA_URI = 'https://spec.xihanfun.com/manifest/v1.json';
 
     /** 宿主启动时激活的事件 */
     private const string ON_STARTUP = 'onStartup';
+
+    /** UTF-8 的 BOM：readFile() 跳过它，read() 把它当作语法错误 */
+    private const string UTF8_BOM = "\xEF\xBB\xBF";
 
     /** 顶层允许的字段，按 Schema 顺序 */
     private const array FIELDS = [
@@ -59,14 +66,14 @@ final readonly class Manifest implements \JsonSerializable
     public array $permissions;
 
     /**
-     * 创建清单并校验格式与跨字段约束。
+     * 创建清单并校验单个字段的格式；字段之间的约束由 validate() 核对。
      *
      * @param string $id 清单 ID `xihan.<领域>.<名称>`
      * @param string $version SemVer
-     * @param int $primitives 依赖的原语层大版本
+     * @param int $primitives 依赖的原语层大版本，1 到 2147483647
      * @param Stability $stability 稳定性
      * @param Kind $kind 种类
-     * @param string|null $schema `$schema` 地址
+     * @param string|null $schema 读到的 `$schema` 地址；写出时总是 SCHEMA_URI
      * @param string|null $package 所属包 ID
      * @param Role|null $role Provider 角色；null 即没有写，按 provider 处理
      * @param Isolation|null $isolation 插件隔离级别；只有插件写，且必须写
@@ -78,7 +85,7 @@ final readonly class Manifest implements \JsonSerializable
      * @param list<string> $permissions 插件所需权限
      * @param string|null $entry 入口
      *
-     * @throws InvalidArgumentException 格式或跨字段约束不合（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 格式不合（PRIMITIVES_VALIDATION_001）
      */
     public function __construct(
         public string $id,
@@ -103,42 +110,52 @@ final readonly class Manifest implements \JsonSerializable
         $this->bindings = Checks::listOf(Binding::class, $bindings, 'bindings');
         $this->activation = $activation === null ? null : Checks::strings($activation, 'activation');
         $this->permissions = Checks::strings($permissions, 'permissions');
-        $this->validate();
+        $this->checkFormats();
     }
 
     /**
-     * 解析并校验清单 JSON。
+     * 读取 JSON 文本里的清单（RFC-0002 解析规则 2，ADR-0236），文本按原样检查，开头的 BOM 是语法错误。
      *
-     * 未知字段、类型不对、格式与跨字段约束都算失败；字段名区分大小写，接口版本只有 requires 里可以带 `^`。
+     * 失败都是 KERNEL_CAPABILITY_006，按这个顺序只报第一处：不是 JSON 为 kernel.manifest.invalid_json（reason 为 `$`，
+     * 任何一层有重复成员时为第一处重复的路径）；根是 null 为 kernel.manifest.empty；不合 Schema 为
+     * kernel.manifest.invalid（reason 为第一处问题的路径）；跨字段约束不合保留 validate() 的消息键与参数 id。
      *
-     * @throws InvalidArgumentException 清单不合法（PRIMITIVES_VALIDATION_001）
+     * @throws ConfigurationException 清单不合法（KERNEL_CAPABILITY_006），toError() 是逐字的错误
      */
     public static function read(string $json): self
     {
-        try {
-            $decoded = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
-            // json_decode 遇到同一层重复的成员名悄悄取最后一个，只能在原文上核对（RFC-0002 解析规则 2）
-            $duplicate = Duplicates::find($json);
-            if ($duplicate !== null) {
-                throw new \UnexpectedValueException(
-                    sprintf("the member '%s' appears more than once in one object", $duplicate),
-                );
-            }
-
-            return self::fromFields(Fields::of($decoded, '$'));
-        } catch (\JsonException | \UnexpectedValueException $exception) {
-            throw new InvalidArgumentException(
-                'The manifest is not valid JSON for the schema: ' . $exception->getMessage() . '.',
-                previous: $exception,
-            );
+        $problem = JsonText::check($json);
+        if ($problem !== null) {
+            throw self::invalid(KernelMessages::MANIFEST_INVALID_JSON, ['reason' => $problem->path]);
         }
+        try {
+            $root = json_decode($json, false, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException) {
+            // 检查已通过：只剩 stdClass 表示不了的成员名（以 U+0000 开头），它不是 Schema 里的成员
+            throw self::invalid(KernelMessages::MANIFEST_INVALID, ['reason' => JsonPath::ROOT]);
+        }
+        if ($root === null) {
+            throw self::invalid(KernelMessages::MANIFEST_EMPTY, []);
+        }
+        $path = ManifestShape::findProblem($root);
+        if ($path !== null) {
+            throw self::invalid(KernelMessages::MANIFEST_INVALID, ['reason' => $path]);
+        }
+        // 形状已核对：读取与格式校验不会再失败，失败即两处规则不一致
+        $manifest = self::fromFields(Fields::of($root, JsonPath::ROOT));
+        $error = $manifest->validate()->error();
+        if ($error !== null) {
+            throw ConfigurationException::fromError($error->withCode(self::ERROR_CODE_INVALID));
+        }
+
+        return $manifest;
     }
 
     /**
-     * 读取并校验清单文件。
+     * 读取清单文件：按 UTF-8 读，跳过开头的 UTF-8 BOM，其余同 read()。
      *
-     * @throws ConfigurationException 文件读不到（PRIMITIVES_VALIDATION_001）
-     * @throws InvalidArgumentException 清单不合法（PRIMITIVES_VALIDATION_001）
+     * @throws ConfigurationException 文件不存在（kernel.manifest.file_missing，参数 path）或清单不合法，都是
+     *     KERNEL_CAPABILITY_006
      */
     public static function readFile(string $path): self
     {
@@ -155,14 +172,42 @@ final readonly class Manifest implements \JsonSerializable
             restore_error_handler();
         }
         if ($json === false) {
-            throw new ConfigurationException(
-                sprintf("The manifest file '%s' could not be read.", $path),
-                ErrorCode::INVALID_ARGUMENT,
+            throw self::invalid(
+                KernelMessages::MANIFEST_FILE_MISSING,
+                ['path' => $path],
                 is_string($warning) ? new \RuntimeException($warning) : null,
             );
         }
 
-        return self::read($json);
+        return self::read(str_starts_with($json, self::UTF8_BOM) ? substr($json, strlen(self::UTF8_BOM)) : $json);
+    }
+
+    /**
+     * 核对字段之间的约束（.NET 的 Manifest.Validate），按这个顺序报第一个：插件没有 isolation、非插件写了 isolation 或
+     * permissions、provides 的能力 ID 重复、requires 的能力 ID 重复、bindings 的名字重复。
+     *
+     * 失败为 PRIMITIVES_VALIDATION_001，消息键 primitives.manifest.*，参数只有 id。
+     *
+     * @return Result<Unit>
+     */
+    public function validate(): Result
+    {
+        $provided = array_map(static fn (CapabilityDeclaration $provided): string => $provided->id, $this->provides);
+        $required = array_map(static fn (CapabilityRequirement $required): string => $required->id, $this->requires);
+        $bound = array_map(static fn (Binding $binding): string => $binding->name, $this->bindings);
+        $key = match (true) {
+            $this->kind === Kind::Plugin && $this->isolation === null => KernelMessages::MANIFEST_ISOLATION_REQUIRED,
+            $this->kind !== Kind::Plugin && ($this->isolation !== null || $this->permissions !== [])
+                => KernelMessages::MANIFEST_ISOLATION_NOT_ALLOWED,
+            Checks::firstDuplicate($provided) !== null => KernelMessages::MANIFEST_DUPLICATE_PROVIDES,
+            Checks::firstDuplicate($required) !== null => KernelMessages::MANIFEST_DUPLICATE_REQUIRES,
+            Checks::firstDuplicate($bound) !== null => KernelMessages::MANIFEST_DUPLICATE_BINDINGS,
+            default => null,
+        };
+
+        return $key === null
+            ? Result::success()
+            : Result::fail(Error::validation(ErrorCode::INVALID_ARGUMENT, $key, ['id' => $this->id]));
     }
 
     /**
@@ -220,32 +265,25 @@ final readonly class Manifest implements \JsonSerializable
     }
 
     /**
-     * 输出规范化的清单 JSON：两空格缩进，字段按 Schema 顺序，缺省值与空列表省略，末尾没有换行。
+     * 写出清单 JSON（RFC-0002「写出」，ADR-0236），排版各语言逐字相同：两个空格缩进，换行只用 LF，末尾不换行，
+     * 成员名与值之间是 `: `；空数组写 `[]`，非空数组每项一行；成员按 jsonSerialize() 的顺序，没有值的可选成员不写，
+     * 列表总写；字符串只转义 `"`、`\` 与控制字符。
      */
     public function toJson(): string
     {
-        $json = json_encode($this, JSON_PRETTY_PRINT | Values::JSON_FLAGS);
-
-        // json_encode 固定四空格缩进；字符串里的换行已转义，行首空白只可能是缩进，按层数折半
-        return (string) preg_replace_callback(
-            '/^(?: {4})+/m',
-            static fn (array $match): string => str_repeat(' ', intdiv(strlen($match[0]), 2)),
-            $json,
-        );
+        return self::indented(Json::writable($this), 0);
     }
 
     /**
-     * 返回线上编码：字段按 Schema 顺序，没有写的与空列表省略。
+     * 返回写出的结构，成员顺序：`$schema`（固定为 SCHEMA_URI）、id、package?、version、primitives、stability、kind、
+     * role（缺省写 provider）、isolation?、provides、requires、bindings、contributes、activation（缺省写 onStartup）、
+     * permissions、entry?。带 ? 的没有值时不写。
      *
      * @return array<string, mixed>
      */
     public function jsonSerialize(): array
     {
-        $wire = [];
-        if ($this->schema !== null) {
-            $wire['$schema'] = $this->schema;
-        }
-        $wire['id'] = $this->id;
+        $wire = ['$schema' => self::SCHEMA_URI, 'id' => $this->id];
         if ($this->package !== null) {
             $wire['package'] = $this->package;
         }
@@ -253,27 +291,16 @@ final readonly class Manifest implements \JsonSerializable
         $wire['primitives'] = (string) $this->primitives;
         $wire['stability'] = $this->stability->value;
         $wire['kind'] = $this->kind->value;
-        if ($this->role !== null) {
-            $wire['role'] = $this->role->value;
-        }
+        $wire['role'] = $this->effectiveRole()->value;
         if ($this->isolation !== null) {
             $wire['isolation'] = $this->isolation->value;
         }
-        $lists = ['provides' => $this->provides, 'requires' => $this->requires, 'bindings' => $this->bindings];
-        foreach ($lists as $name => $list) {
-            if ($list !== []) {
-                $wire[$name] = $list;
-            }
-        }
-        if ($this->contributes !== null) {
-            $wire['contributes'] = $this->contributes;
-        }
-        if ($this->activation !== null) {
-            $wire['activation'] = $this->activation;
-        }
-        if ($this->permissions !== []) {
-            $wire['permissions'] = $this->permissions;
-        }
+        $wire['provides'] = $this->provides;
+        $wire['requires'] = $this->requires;
+        $wire['bindings'] = $this->bindings;
+        $wire['contributes'] = $this->contributes ?? new Contributions();
+        $wire['activation'] = $this->effectiveActivation();
+        $wire['permissions'] = $this->permissions;
         if ($this->entry !== null) {
             $wire['entry'] = $this->entry;
         }
@@ -282,37 +309,67 @@ final readonly class Manifest implements \JsonSerializable
     }
 
     /**
-     * 按 Schema 读取顶层对象。
+     * 按规范排版写出一个值：对象是关联数组或 stdClass，数组是列表。
+     */
+    private static function indented(mixed $value, int $depth): string
+    {
+        if (is_string($value)) {
+            return Json::string($value);
+        }
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+        if (is_int($value)) {
+            return (string) $value;
+        }
+        if (!is_array($value) && !$value instanceof \stdClass) {
+            return 'null';
+        }
+        $indent = "\n" . str_repeat('  ', $depth + 1);
+        $close = "\n" . str_repeat('  ', $depth);
+        if (is_array($value) && array_is_list($value)) {
+            if ($value === []) {
+                return '[]';
+            }
+            $items = array_map(static fn (mixed $item): string => self::indented($item, $depth + 1), $value);
+
+            return '[' . $indent . implode(',' . $indent, $items) . $close . ']';
+        }
+        $members = [];
+        foreach ($value instanceof \stdClass ? get_object_vars($value) : $value as $name => $item) {
+            $members[] = Json::string((string) $name) . ': ' . self::indented($item, $depth + 1);
+        }
+
+        return $members === [] ? '{}' : '{' . $indent . implode(',' . $indent, $members) . $close . '}';
+    }
+
+    /**
+     * 按 Schema 读取顶层对象；形状已核对过。
      *
      * @throws \UnexpectedValueException 类型不对或有未知字段
-     * @throws InvalidArgumentException 格式或跨字段约束不合
+     * @throws InvalidArgumentException 格式不合
      */
     private static function fromFields(Fields $fields): self
     {
         $fields->only(self::FIELDS);
-        $id = $fields->string('id');
-        $kind = $fields->string('kind');
         $role = $fields->optionalString('role');
         $isolation = $fields->optionalString('isolation');
-        $stability = Stability::tryFrom($fields->string('stability'))
-            ?? throw new \UnexpectedValueException($fields->pathOf('stability') . ' is not a stability');
 
         return new self(
-            id: $id,
+            id: $fields->string('id'),
             version: $fields->string('version'),
             primitives: Checks::interfaceVersion($fields->string('primitives'), false)
                 ?? throw new \UnexpectedValueException($fields->pathOf('primitives') . ' must be a positive integer'),
-            stability: $stability,
-            kind: Kind::tryFrom($kind)
-                ?? throw new InvalidArgumentException(sprintf("The kind '%s' of '%s' is not valid.", $kind, $id)),
+            stability: Stability::tryFrom($fields->string('stability'))
+                ?? throw new \UnexpectedValueException($fields->pathOf('stability') . ' is not a stability'),
+            kind: Kind::tryFrom($fields->string('kind'))
+                ?? throw new \UnexpectedValueException($fields->pathOf('kind') . ' is not a kind'),
             schema: $fields->optionalString('$schema'),
             package: $fields->optionalString('package'),
             role: $role === null ? null : (Role::tryFrom($role)
-                ?? throw new InvalidArgumentException(sprintf("The role '%s' of '%s' is not valid.", $role, $id))),
+                ?? throw new \UnexpectedValueException($fields->pathOf('role') . ' is not a role')),
             isolation: $isolation === null ? null : (Isolation::tryFrom($isolation)
-                ?? throw new InvalidArgumentException(
-                    sprintf("The isolation '%s' of '%s' is not valid.", $isolation, $id),
-                )),
+                ?? throw new \UnexpectedValueException($fields->pathOf('isolation') . ' is not an isolation')),
             provides: array_map(self::declarationOf(...), $fields->objects('provides')),
             requires: array_map(self::requirementOf(...), $fields->objects('requires')),
             bindings: array_map(self::bindingOf(...), $fields->objects('bindings')),
@@ -386,37 +443,21 @@ final readonly class Manifest implements \JsonSerializable
     }
 
     /**
-     * 校验格式与跨字段约束。
+     * 核对单个字段的格式。
      *
      * @throws InvalidArgumentException
      */
-    private function validate(): void
+    private function checkFormats(): void
     {
         if (!ManifestId::isValid($this->id)) {
             $this->fail("The manifest ID '%s' must match xihan.<domain>.<name>", $this->id);
         }
-        if (preg_match(self::SEMVER_PATTERN, $this->version) !== 1) {
+        if (!Checks::matches(Checks::SEMVER_PATTERN, $this->version)) {
             $this->fail("The version '%s' of '%s' must be a semantic version", $this->version, $this->id);
         }
-        if ($this->primitives < 1) {
-            $this->fail("The primitives version of '%s' must be a positive integer", $this->id);
+        if (!Checks::isVersion($this->primitives)) {
+            $this->fail("The primitives version of '%s' must be between 1 and 2147483647", $this->id);
         }
-        // 隔离只对插件有意义：插件不写就无法决定怎么加载，非插件写了说明清单种类写错了
-        if ($this->kind === Kind::Plugin && $this->isolation === null) {
-            $this->fail("The plugin '%s' must declare its isolation", $this->id);
-        }
-        if ($this->kind !== Kind::Plugin && $this->isolation !== null) {
-            $this->fail("The manifest '%s' is not a plugin and must not declare an isolation", $this->id);
-        }
-        if ($this->kind !== Kind::Plugin && $this->permissions !== []) {
-            $this->fail("The manifest '%s' is not a plugin and must not declare permissions", $this->id);
-        }
-        $provided = array_map(static fn (CapabilityDeclaration $provided): string => $provided->id, $this->provides);
-        $this->rejectDuplicate($provided, 'provides');
-        $required = array_map(static fn (CapabilityRequirement $required): string => $required->id, $this->requires);
-        $this->rejectDuplicate($required, 'requires');
-        $bound = array_map(static fn (Binding $binding): string => $binding->name, $this->bindings);
-        $this->rejectDuplicate($bound, 'declares the binding');
         // activation 写了就至少一项：空数组不是「没有写」，缺省才是 onStartup（RFC-0002 解析规则 2）
         if ($this->activation === []) {
             $this->fail(
@@ -425,38 +466,25 @@ final readonly class Manifest implements \JsonSerializable
             );
         }
         foreach ($this->activation ?? [] as $event) {
-            if (preg_match(self::ACTIVATION_PATTERN, $event) !== 1) {
+            if (!Checks::matches(Checks::ACTIVATION_PATTERN, $event)) {
                 $this->fail("The activation event '%s' of '%s' is not valid", $event, $this->id);
             }
         }
         foreach ($this->permissions as $permission) {
-            if (preg_match(self::PERMISSION_PATTERN, $permission) !== 1) {
+            if (!Checks::matches(Checks::PERMISSION_PATTERN, $permission)) {
                 $this->fail("The permission '%s' of '%s' is not valid", $permission, $this->id);
             }
-        }
-        // 只有 Wasm 插件能贡献中间件（RFC-0017「范围」）：进程外与进程内插件写了 contributes.pipeline，
-        // .NET 宿主在发现或加载时以 PLUGINS_VALIDATION_001 拒绝；这里同样拒绝，不让作者以为中间件生效了、等到宿主那里才失败
-        $pipeline = $this->contributes->pipeline ?? [];
-        if ($this->kind === Kind::Plugin && $this->isolation !== Isolation::Wasm && $pipeline !== []) {
-            $this->fail(
-                "The plugin '%s' with isolation '%s' must not declare 'contributes.pipeline' (%s): "
-                . 'only wasm plugins can contribute middleware',
-                $this->id,
-                $this->isolation->value ?? '',
-                implode(', ', array_map(static fn (PipelineContribution $c): string => $c->middleware, $pipeline)),
-            );
         }
     }
 
     /**
-     * @param list<string> $values
+     * 清单读取失败：KERNEL_CAPABILITY_006。
+     *
+     * @param array<string, string> $arguments
      */
-    private function rejectDuplicate(array $values, string $verb): void
+    private static function invalid(string $key, array $arguments, ?\Throwable $previous = null): ConfigurationException
     {
-        $duplicate = Checks::firstDuplicate($values);
-        if ($duplicate !== null) {
-            $this->fail("The manifest '%s' %s '%s' more than once", $this->id, $verb, $duplicate);
-        }
+        return ConfigurationException::fromError(Error::of(self::ERROR_CODE_INVALID, $key, $arguments), $previous);
     }
 
     /**

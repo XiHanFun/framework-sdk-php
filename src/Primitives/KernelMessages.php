@@ -9,6 +9,9 @@ namespace XiHan\Framework\Primitives;
  *
  * 模板与 spec/conformance/vectors/primitives/kernel-messages.json 逐字相同（取自 .NET 的 Localization/en-US.json）。
  * 进程默认的解析器解析不出这些键时，Error::message() 用这里的英文模板；宿主收到插件的错误后按键用自己的目录翻译。
+ *
+ * 清单读取的键（kernel.manifest.* 与 primitives.manifest.*，RFC-0002 解析规则 2）不在共用表里，模板同样取自 .NET 的
+ * en-US 语言文件。
  */
 final class KernelMessages
 {
@@ -45,6 +48,33 @@ final class KernelMessages
     /** 操作登记表已满（KERNEL_OPERATION_002）；参数 capacity。 */
     public const string OPERATION_REGISTRY_FULL = 'kernel.operation.registry_full';
 
+    /** 清单不是 JSON 或有重复成员（KERNEL_CAPABILITY_006）；参数 reason（`$` 或第一处重复的路径）。 */
+    public const string MANIFEST_INVALID_JSON = 'kernel.manifest.invalid_json';
+
+    /** 清单的根是 null（KERNEL_CAPABILITY_006）；参数无。 */
+    public const string MANIFEST_EMPTY = 'kernel.manifest.empty';
+
+    /** 清单文件不存在（KERNEL_CAPABILITY_006）；参数 path。 */
+    public const string MANIFEST_FILE_MISSING = 'kernel.manifest.file_missing';
+
+    /** 清单不合 Schema（KERNEL_CAPABILITY_006）；参数 reason（第一处问题的路径）。 */
+    public const string MANIFEST_INVALID = 'kernel.manifest.invalid';
+
+    /** 插件清单没有声明 isolation；参数 id。 */
+    public const string MANIFEST_ISOLATION_REQUIRED = 'primitives.manifest.isolation_required';
+
+    /** 非插件清单声明了 isolation 或 permissions；参数 id。 */
+    public const string MANIFEST_ISOLATION_NOT_ALLOWED = 'primitives.manifest.isolation_not_allowed';
+
+    /** provides 里的能力 ID 重复；参数 id。 */
+    public const string MANIFEST_DUPLICATE_PROVIDES = 'primitives.manifest.duplicate_provides';
+
+    /** requires 里的能力 ID 重复；参数 id。 */
+    public const string MANIFEST_DUPLICATE_REQUIRES = 'primitives.manifest.duplicate_requires';
+
+    /** bindings 里的名字重复；参数 id。 */
+    public const string MANIFEST_DUPLICATE_BINDINGS = 'primitives.manifest.duplicate_bindings';
+
     /** en-US 模板 */
     private const array ENGLISH = [
         self::RESULT_UNINITIALIZED => 'The result is uninitialized: a default value is not a valid result.',
@@ -58,6 +88,19 @@ final class KernelMessages
         self::OPERATION_NO_RESPONSE => "Operation '{id}' completed without producing a response.",
         self::OPERATION_DUPLICATE => "Operation '{id}' is already registered by '{owner}'.",
         self::OPERATION_REGISTRY_FULL => 'The operation registry has reached its capacity of {capacity}.',
+        self::MANIFEST_INVALID_JSON => 'The manifest is not valid JSON: {reason}',
+        self::MANIFEST_EMPTY => 'The manifest is empty.',
+        self::MANIFEST_FILE_MISSING => "Manifest file '{path}' does not exist.",
+        self::MANIFEST_INVALID => 'The manifest is not valid: {reason}',
+        self::MANIFEST_ISOLATION_REQUIRED => "Plugin manifest '{id}' must declare 'isolation'.",
+        self::MANIFEST_ISOLATION_NOT_ALLOWED => "Manifest '{id}' is not a plugin and must not declare 'isolation' or "
+            . "'permissions'.",
+        self::MANIFEST_DUPLICATE_PROVIDES => "Manifest '{id}' declares the same capability ID more than once in "
+            . "'provides'.",
+        self::MANIFEST_DUPLICATE_REQUIRES => "Manifest '{id}' declares the same capability ID more than once in "
+            . "'requires'.",
+        self::MANIFEST_DUPLICATE_BINDINGS => "Manifest '{id}' declares the same binding name more than once in "
+            . "'bindings'.",
     ];
 
     private function __construct()

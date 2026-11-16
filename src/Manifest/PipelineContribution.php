@@ -45,18 +45,15 @@ final readonly class PipelineContribution implements \JsonSerializable
     /**
      * 返回线上编码；没有约束时省略 before / after。
      *
-     * @return array{middleware: string, stage: string, before?: list<string>, after?: list<string>}
+     * @return array{middleware: string, stage: string, before: list<string>, after: list<string>}
      */
     public function jsonSerialize(): array
     {
-        $wire = ['middleware' => $this->middleware, 'stage' => $this->stage->value];
-        if ($this->before !== []) {
-            $wire['before'] = $this->before;
-        }
-        if ($this->after !== []) {
-            $wire['after'] = $this->after;
-        }
-
-        return $wire;
+        return [
+            'middleware' => $this->middleware,
+            'stage' => $this->stage->value,
+            'before' => $this->before,
+            'after' => $this->after,
+        ];
     }
 }

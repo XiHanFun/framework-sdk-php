@@ -90,17 +90,22 @@ final class ManifestTest extends TestCase
             . '"version":"1.0.0","id":"xihan.a.b","requires":[{"optional":false,"version":"^1","id":"kernel.hosting"}],'
             . '"bindings":[{"name":"db","type":"connection:relational","required":true}]}',
         );
+        // 排版写死（RFC-0002「写出」）：成员顺序固定，列表总写，role 与 activation 写缺省值，^1 写成 1
         $expected = <<<'JSON'
             {
+              "$schema": "https://spec.xihanfun.com/manifest/v1.json",
               "id": "xihan.a.b",
               "version": "1.0.0",
               "primitives": "1",
               "stability": "stable",
               "kind": "capability",
+              "role": "provider",
+              "provides": [],
               "requires": [
                 {
                   "id": "kernel.hosting",
-                  "version": "1"
+                  "version": "1",
+                  "optional": false
                 }
               ],
               "bindings": [
@@ -110,7 +115,16 @@ final class ManifestTest extends TestCase
                   "required": true
                 }
               ],
-              "contributes": {}
+              "contributes": {
+                "pipeline": [],
+                "operations": [],
+                "permissions": [],
+                "health": []
+              },
+              "activation": [
+                "onStartup"
+              ],
+              "permissions": []
             }
             JSON;
         self::assertSame($expected, $manifest->toJson());
@@ -233,75 +247,79 @@ final class ManifestTest extends TestCase
         CapabilityRequirement::parse('kernel.hosting@0');
     }
 
-    public function testOnlyWasmPluginsMayContributeMiddleware(): void
+    public function testOnlyWasmPluginsMayContributeMiddlewareIsTheHostsCheck(): void
     {
-        $template = '{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"%s"%s,'
-            . '"contributes":{"pipeline":%s}}';
-        $audit = '[{"middleware":"audit","stage":"observe"},{"middleware":"tenant-guard","stage":"tenant"}]';
-        foreach ([Isolation::OutOfProcess, Isolation::InProcess] as $isolation) {
-            $json = sprintf($template, Kind::Plugin->value, sprintf(',"isolation":"%s"', $isolation->value), $audit);
-            $exception = self::rejection($json);
-            foreach (["'xihan.a.b'", "'contributes.pipeline'", 'audit, tenant-guard', $isolation->value] as $fragment) {
-                self::assertStringContainsString($fragment, $exception->getMessage());
-            }
-        }
+        // .NET 的读取不核对这一条，宿主在发现插件时以 PLUGINS_VALIDATION_001 拒绝（RFC-0002、RFC-0017）
+        $json = '{"id":"xihan.a.b","version":"1.0.0","primitives":"1","stability":"stable","kind":"plugin",'
+            . '"isolation":"out-of-process","contributes":{"pipeline":[{"middleware":"audit","stage":"observe"}]}}';
+        $manifest = Manifest::read($json);
+        self::assertSame('audit', $manifest->contributes?->pipeline[0]->middleware);
+        self::assertTrue($manifest->validate()->isOk());
+    }
 
-        $accepted = [
-            'wasm plugin' => sprintf($template, Kind::Plugin->value, ',"isolation":"wasm"', $audit),
-            'capability' => sprintf($template, Kind::Capability->value, '', $audit),
-            'provider' => sprintf($template, Kind::Provider->value, '', $audit),
-            'out-of-process, empty list' => sprintf($template, Kind::Plugin->value, ',"isolation":"out-of-process"', '[]'),
-            'in-process, empty list' => sprintf($template, Kind::Plugin->value, ',"isolation":"in-process"', '[]'),
-        ];
-        foreach ($accepted as $name => $json) {
-            self::assertSame('xihan.a.b', Manifest::read($json)->id, $name);
-        }
-
-        // 在代码里构造同样核对：建不出宿主会拒绝的清单
-        $this->expectException(InvalidArgumentException::class);
-        new Manifest(
+    public function testCrossFieldConstraintsAreReportedByValidate(): void
+    {
+        // 构造只核对单个字段的格式；字段之间的约束由 validate() 按 .NET 的顺序报第一个
+        $manifest = new Manifest(
             id: 'xihan.a.b',
             version: '1.0.0',
             primitives: 1,
             stability: Stability::Stable,
             kind: Kind::Plugin,
-            isolation: Isolation::OutOfProcess,
-            contributes: new Contributions(pipeline: [new PipelineContribution('audit', PipelineStage::Observe)]),
+            provides: [new CapabilityDeclaration('a.b', 1), new CapabilityDeclaration('a.b', 2)],
         );
+        $error = $manifest->validate()->error();
+        self::assertNotNull($error);
+        self::assertSame(ErrorCode::INVALID_ARGUMENT, $error->code);
+        self::assertSame('primitives.manifest.isolation_required', $error->messageKey);
+        self::assertSame(['id' => 'xihan.a.b'], $error->details);
+        self::assertSame("Plugin manifest 'xihan.a.b' must declare 'isolation'.", $error->message());
+        $this->expectException(InvalidArgumentException::class);
+        new Manifest(id: 'xihan.a.b', version: '1.0.0', primitives: 2147483648, stability: Stability::Stable, kind: Kind::Host);
     }
-
     public function testReadFile(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'xihan-manifest-');
         self::assertIsString($path);
         try {
-            file_put_contents($path, self::ECHO_MANIFEST);
+            // readFile 跳过开头的 UTF-8 BOM，read 不跳过（RFC-0002 解析规则 2）
+            file_put_contents($path, "\xEF\xBB\xBF" . self::ECHO_MANIFEST);
             self::assertSame('xihan.samples.echo', Manifest::readFile($path)->id);
+            self::assertSame('kernel.manifest.invalid_json', self::rejection("\xEF\xBB\xBF" . self::ECHO_MANIFEST)->toError()->messageKey);
+            file_put_contents($path, "{\"id\":\"\xff\"}");
+            self::assertSame('kernel.manifest.invalid_json', self::fileRejection($path)->toError()->messageKey);
         } finally {
             unlink($path);
         }
-        try {
-            Manifest::readFile($path);
-            self::fail('a missing file must be rejected');
-        } catch (ConfigurationException $exception) {
-            self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode());
-            self::assertStringContainsString($path, $exception->getMessage());
-        }
+        $exception = self::fileRejection($path);
+        self::assertSame(Manifest::ERROR_CODE_INVALID, $exception->errorCode());
+        self::assertSame('kernel.manifest.file_missing', $exception->toError()->messageKey);
+        self::assertSame(['path' => $path], $exception->toError()->details);
+        self::assertSame(sprintf("Manifest file '%s' does not exist.", $path), $exception->getMessage());
     }
-
     private static function assertRejected(string $json, string $name): void
     {
         $exception = self::rejection($json);
-        self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode(), $name);
+        self::assertSame(Manifest::ERROR_CODE_INVALID, $exception->errorCode(), $name);
     }
 
-    private static function rejection(string $json): InvalidArgumentException
+    private static function rejection(string $json): ConfigurationException
     {
         try {
             Manifest::read($json);
-        } catch (InvalidArgumentException $exception) {
+        } catch (ConfigurationException $exception) {
             return $exception;
         }
         self::fail(sprintf('%s must be rejected', $json));
+    }
+
+    private static function fileRejection(string $path): ConfigurationException
+    {
+        try {
+            Manifest::readFile($path);
+        } catch (ConfigurationException $exception) {
+            return $exception;
+        }
+        self::fail(sprintf('%s must be rejected', $path));
     }
 }

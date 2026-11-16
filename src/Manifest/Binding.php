@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Manifest;
 
+use XiHan\Framework\Manifest\Internal\Checks;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 
 /**
@@ -14,10 +15,8 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
 final readonly class Binding implements \JsonSerializable
 {
     /** 绑定名文法；D 修饰符让 $ 只匹配串尾 */
-    private const string NAME_PATTERN = '/^[a-z][a-z0-9-]*$/D';
 
     /** 资源类型文法，如 connection:relational、queue */
-    private const string TYPE_PATTERN = '/^[a-z]+(:[a-z]+)?$/D';
 
     /**
      * 创建绑定。
@@ -30,7 +29,10 @@ final readonly class Binding implements \JsonSerializable
      */
     public function __construct(public string $name, public string $type, public ?bool $required = null)
     {
-        if (preg_match(self::NAME_PATTERN, $name) !== 1 || preg_match(self::TYPE_PATTERN, $type) !== 1) {
+        if (
+            !Checks::matches(Checks::BINDING_NAME_PATTERN, $name)
+            || !Checks::matches(Checks::BINDING_TYPE_PATTERN, $type)
+        ) {
             throw new InvalidArgumentException(sprintf(
                 "The binding '%s' (%s) is not valid: the name must match ^[a-z][a-z0-9-]*$ "
                 . 'and the type ^[a-z]+(:[a-z]+)?$.',
@@ -51,15 +53,10 @@ final readonly class Binding implements \JsonSerializable
     /**
      * 返回线上编码。
      *
-     * @return array{name: string, type: string, required?: bool}
+     * @return array{name: string, type: string, required: bool}
      */
     public function jsonSerialize(): array
     {
-        $wire = ['name' => $this->name, 'type' => $this->type];
-        if ($this->required !== null) {
-            $wire['required'] = $this->required;
-        }
-
-        return $wire;
+        return ['name' => $this->name, 'type' => $this->type, 'required' => $this->isRequired()];
     }
 }

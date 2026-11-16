@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Manifest;
 
+use XiHan\Framework\Manifest\Internal\Checks;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 
 /**
@@ -33,10 +34,13 @@ final readonly class CapabilityRequirement implements \JsonSerializable, \String
                 sprintf("The capability ID '%s' must match <domain>.<capability>.", $id),
             );
         }
-        if ($version < 1) {
-            throw new InvalidArgumentException(
-                sprintf("The interface version of '%s' must be a positive integer, got %d.", $id, $version),
-            );
+        if (!Checks::isVersion($version)) {
+            throw new InvalidArgumentException(sprintf(
+                "The interface version of '%s' must be between 1 and %d, got %d.",
+                $id,
+                Checks::MAX_VERSION,
+                $version,
+            ));
         }
     }
 
@@ -48,9 +52,10 @@ final readonly class CapabilityRequirement implements \JsonSerializable, \String
         if (preg_match(self::TEXT_PATTERN, $text, $match) !== 1) {
             return null;
         }
-        $version = filter_var($match[3], FILTER_VALIDATE_INT);
+        // 版本不带前导零，不超过 2147483647（conventions/capability-ids.md，ADR-0236）
+        $version = Checks::interfaceVersion($match[3], false);
 
-        return is_int($version) ? new self($match[1], $version, $match[4] === '?') : null;
+        return $version === null ? null : new self($match[1], $version, $match[4] === '?');
     }
 
     /**
@@ -85,15 +90,10 @@ final readonly class CapabilityRequirement implements \JsonSerializable, \String
     /**
      * 返回线上编码。
      *
-     * @return array{id: string, version: string, optional?: true}
+     * @return array{id: string, version: string, optional: bool}
      */
     public function jsonSerialize(): array
     {
-        $wire = ['id' => $this->id, 'version' => (string) $this->version];
-        if ($this->optional) {
-            $wire['optional'] = true;
-        }
-
-        return $wire;
+        return ['id' => $this->id, 'version' => (string) $this->version, 'optional' => $this->optional];
     }
 }
