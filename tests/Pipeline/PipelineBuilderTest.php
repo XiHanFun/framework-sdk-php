@@ -128,11 +128,33 @@ final class PipelineBuilderTest extends TestCase
         self::assertSame("observe      Guard[guard-a]\nobserve      Guard[guard-b]\n", $builder->dump());
         self::assertSame('guard-a', $builder->describe()[0]->instance);
 
-        // 按中间件名约束有多个实例的主体：声明时就有歧义，立即报；作为目标则在排序时报
+        // 名字只匹配实例名与没有实例名的中间件名（与 .NET 一致）：只有命名实例的中间件名匹配不到，作为主体在声明时报未登记，
+        // 作为目标在排序时报
         $builder->useAt(Recorder::passThrough('Other'), PipelineStage::Observe);
         self::assertImmediate(static fn (): mixed => $builder->before('Guard', 'Other'));
         $builder->before('Other', 'Guard');
         self::assertCode($builder, PipelineBuilder::ERROR_CODE_REGISTRATION);
+        try {
+            $builder->describe();
+        } catch (ConfigurationException $exception) {
+            self::assertSame(
+                "The ordering constraint of middleware 'Other' references unregistered middleware 'Guard'.",
+                $exception->getMessage(),
+            );
+        }
+        // 实例名与另一个中间件名相同：按名字有歧义
+        $ambiguous = (new PipelineBuilder())
+            ->useAt(Recorder::passThrough('Audit'), PipelineStage::Observe)
+            ->useNamedInstance('Audit', Recorder::passThrough('Guard'), PipelineStage::Observe);
+        try {
+            $ambiguous->before('Audit', 'Guard');
+            self::fail('an ambiguous name must be rejected when declared');
+        } catch (ConfigurationException $exception) {
+            self::assertSame(
+                "The middleware name 'Audit' matches several registrations, so ordering constraints by name are ambiguous for it.",
+                $exception->getMessage(),
+            );
+        }
 
         $duplicate = (new PipelineBuilder())->useNamedInstance('x', Recorder::passThrough('Guard'), PipelineStage::Observe);
         self::assertImmediate(
@@ -191,7 +213,7 @@ final class PipelineBuilderTest extends TestCase
             } catch (ConfigurationException $exception) {
                 self::assertSame(PipelineBuilder::ERROR_CODE_REGISTRATION, $exception->errorCode());
                 self::assertSame(
-                    "The middleware 'A' must be registered before an ordering constraint on it is declared.",
+                    "Middleware 'A' is not registered, so no ordering constraint can be declared for it.",
                     $exception->getMessage(),
                 );
             }

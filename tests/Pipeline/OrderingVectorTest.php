@@ -36,6 +36,8 @@ final class OrderingVectorTest extends TestCase
         foreach (self::section('errors') as $case) {
             $name = self::string($case, 'name');
             $expected = self::string($case, 'error');
+            // 消息是 .NET 的英文原文，逐字相等（ADR-0236）
+            $message = str_replace('{type}', self::TYPE, self::string($case, 'message'));
             $at = $case->at ?? null;
             $builder = new PipelineBuilder();
             $failedAt = null;
@@ -44,6 +46,7 @@ final class OrderingVectorTest extends TestCase
                     self::apply($builder, $step);
                 } catch (ConfigurationException $exception) {
                     self::assertSame($expected, $exception->errorCode(), $name);
+                    self::assertSame($message, $exception->getMessage(), $name);
                     $failedAt = $index;
                     break;
                 }
@@ -56,6 +59,7 @@ final class OrderingVectorTest extends TestCase
                         self::fail(sprintf('%s must fail when sorting (%s)', $name, $method));
                     } catch (ConfigurationException $exception) {
                         self::assertSame($expected, $exception->errorCode(), $name);
+                        self::assertSame($message, $exception->getMessage(), $name);
                     }
                 }
                 $failedAt = 'sort';
