@@ -219,20 +219,24 @@ final class Context
     /**
      * 派生一个多一个 Baggage 键值的上下文；同名的键被替换。
      *
-     * 已登记键的值不合约束时这个成员被丢弃（conventions/baggage-keys.md）：派生出的上下文里没有这个键，
-     * 原来的值也不留下——调用方要换掉它，留下旧值会让上下文带着调用方想撤下的租户或主体。幂等键例外。
+     * 程序内逐项派生给已登记的键一个不合约束的值是编程错误（conventions/baggage-keys.md，ADR-0235）：抛出，
+     * 不静默丢弃，也不保留原值，与键不合文法时一样；幂等键例外。外部输入走 create(baggage:)，那里丢弃不合的成员。
      *
-     * @throws InvalidArgumentException 键不符合 `xihan.<name>`（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 键不符合 `xihan.<name>`，或已登记键的值不合约束（PRIMITIVES_VALIDATION_001）
      */
     public function withBaggage(string $key, string $value): self
     {
         self::checkKey($key);
-        $baggage = $this->baggage;
-        if (BaggageKeys::admits($key, $value)) {
-            $baggage[$key] = $value;
-        } else {
-            unset($baggage[$key]);
+        if (!BaggageKeys::admits($key, $value)) {
+            throw new InvalidArgumentException(sprintf(
+                "The baggage value of '%s' must be non-empty, at most %d UTF-16 code units "
+                . 'and free of control characters.',
+                $key,
+                BaggageKeys::MAX_VALUE_LENGTH,
+            ));
         }
+        $baggage = $this->baggage;
+        $baggage[$key] = $value;
 
         return $this->derive($baggage);
     }
@@ -338,7 +342,7 @@ final class Context
             if (!is_string($value)) {
                 throw new InvalidArgumentException(sprintf("The baggage value of '%s' must be a string.", $key));
             }
-            // 丢弃发生在构造上下文的入口：上下文只携带已经通过的值，之后不再逐次过滤
+            // 由一组 Baggage 构造上下文是外部输入：丢弃不合的成员（与 W3C 忽略不合法的成员一致），上下文只携带已经通过的值
             if (BaggageKeys::admits($key, $value)) {
                 $checked[$key] = $value;
             }

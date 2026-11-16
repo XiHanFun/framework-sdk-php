@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Primitives\BaggageKeys;
 use XiHan\Framework\Primitives\ErrorCode;
+use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\LifecycleState;
 use XiHan\Framework\Tests\Vectors;
 
@@ -61,16 +62,27 @@ final class VectorsTest extends TestCase
         foreach ($unacceptable as $value) {
             self::assertFalse(BaggageKeys::isAcceptableValue($value), sprintf('%s must be unacceptable', json_encode($value)));
         }
-        // 构造与派生上下文时按同一口径丢弃，幂等键例外
+        // 外部输入（由一组 Baggage 构造）丢弃不合的成员；程序内逐项派生给出不合的值抛出；幂等键两种情形都例外
         foreach (BaggageKeys::registered() as $key) {
             foreach ($acceptable as $value) {
                 self::assertSame($value, Context::create(baggage: [$key => $value])->baggageValue($key), $key);
                 self::assertSame($value, Context::create()->withBaggage($key, $value)->baggageValue($key), $key);
             }
             foreach ($unacceptable as $value) {
-                $kept = $key === BaggageKeys::IDEMPOTENCY_KEY ? $value : null;
-                self::assertSame($kept, Context::create(baggage: [$key => $value])->baggageValue($key), $key);
-                self::assertSame($kept, Context::create()->withBaggage($key, $value)->baggageValue($key), $key);
+                if ($key === BaggageKeys::IDEMPOTENCY_KEY) {
+                    self::assertSame($value, Context::create(baggage: [$key => $value])->baggageValue($key));
+                    self::assertSame($value, Context::create()->withBaggage($key, $value)->baggageValue($key));
+                    continue;
+                }
+                $original = Context::create(baggage: [$key => 'v1']);
+                self::assertNull(Context::create(baggage: [$key => $value])->baggageValue($key), $key);
+                try {
+                    $original->withBaggage($key, $value);
+                    self::fail(sprintf('deriving %s with %s must be rejected', $key, json_encode($value)));
+                } catch (InvalidArgumentException $exception) {
+                    self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode());
+                }
+                self::assertSame('v1', $original->baggageValue($key), 'the source context keeps its value');
             }
         }
     }

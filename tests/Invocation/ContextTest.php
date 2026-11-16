@@ -34,10 +34,16 @@ final class ContextTest extends TestCase
         self::assertSame("k\n1", $context->idempotencyKey(), 'the idempotency key is left to the idempotency stage');
         self::assertSame("on\noff", $context->baggageValue('xihan.feature-flag'), 'unregistered keys never leave the process');
 
-        // 派生时同一口径：不合的值丢弃，同名的旧值也不留下
+        // 程序内逐项派生给出不合的值是编程错误：抛出，源上下文不变
         $withTenant = $context->withBaggage(BaggageKeys::TENANT, 't1');
         self::assertSame('t1', $withTenant->tenant());
-        self::assertNull($withTenant->withBaggage(BaggageKeys::TENANT, str_repeat('t', 257))->tenant());
+        self::assertSame("k\n2", $withTenant->withBaggage(BaggageKeys::IDEMPOTENCY_KEY, "k\n2")->idempotencyKey());
+        try {
+            $withTenant->withBaggage(BaggageKeys::TENANT, str_repeat('t', 257));
+            self::fail('an unacceptable value must be rejected when deriving');
+        } catch (InvalidArgumentException $exception) {
+            self::assertStringContainsString("'xihan.tenant'", $exception->getMessage());
+        }
         self::assertSame('t1', $withTenant->tenant(), 'the source context is unchanged');
     }
 

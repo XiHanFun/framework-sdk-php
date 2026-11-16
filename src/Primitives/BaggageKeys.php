@@ -81,7 +81,8 @@ final class BaggageKeys
      *
      * 非空、按 UTF-16 码元计不超过 MAX_VALUE_LENGTH（与 .NET、JavaScript、Java 的字符串长度相同，基本多文种平面
      * 以外的字符算两个）、不含 U+0000–U+001F 与 U+007F–U+009F。这些值会写进日志、审计与消息信封，换行能伪造日志行。
-     * 不合的成员在建或派生调用上下文时丢弃，xihan.idempotency-key 例外。PHP 字符串是字节：不是合法 UTF-8 的值不可接受。
+     * 外部输入（由一组 Baggage 构造上下文）丢弃不合的成员，程序内逐项派生给出不合的值抛出；xihan.idempotency-key 两种情形都例外。
+     * PHP 字符串是字节：不是合法 UTF-8 的值不可接受。
      */
     public static function isAcceptableValue(string $value): bool
     {
