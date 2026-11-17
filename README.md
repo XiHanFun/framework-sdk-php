@@ -22,7 +22,7 @@
 
 </div>
 
-The PHP implementation of [XiHan Spec](https://github.com/XiHanFun/framework-spec): the primitives layer, manifests, the invocation context, the pipeline and operation contracts. Semantics, error codes, message keys and wire encoding match the .NET reference implementation ([XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)) and the Go SDK ([framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go)), with an API that follows PHP conventions; the spec lives in `spec/` as a submodule, and conformance is verified by the vectors in the spec repository.
+The PHP implementation of [XiHan Spec](https://github.com/XiHanFun/framework-spec): the primitives layer, manifests, the invocation context, the pipeline and operation contracts. Semantics, error codes, message keys and wire encoding follow the spec and match the .NET reference implementation ([XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework)), with an API that follows PHP conventions; the spec lives in `spec/` as a submodule, and conformance is verified by the vectors in the spec repository.
 
 ## Modules
 
@@ -200,7 +200,7 @@ Then run them again with the image changed to `php:8.4-cli`. `composer.json` pin
 | --- | --- |
 | [framework-spec](https://github.com/XiHanFun/framework-spec) | XiHan Spec: RFCs, vocabulary, protocol mappings and conformance vectors |
 | [XiHan.Framework](https://github.com/XiHanFun/XiHan.Framework) | The .NET reference implementation |
-| [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) | Go SDK, including the out-of-process plugin runtime |
+| [framework-sdk-go](https://github.com/XiHanFun/framework-sdk-go) | Go SDK |
 | [framework-sdk-typescript](https://github.com/XiHanFun/framework-sdk-typescript) | TypeScript SDK |
 | [framework-sdk-rust](https://github.com/XiHanFun/framework-sdk-rust) | Rust SDK |
 | [framework-sdk-java](https://github.com/XiHanFun/framework-sdk-java) | Java SDK |
@@ -210,7 +210,7 @@ Then run them again with the image changed to `php:8.4-cli`. `composer.json` pin
 
 [Issues](https://github.com/XiHanFun/framework-sdk-php/issues) and pull requests are welcome.
 
-1. Start with the README and the RFCs of framework-spec, then look at how framework-sdk-go is divided into packages.
+1. Start with the README and the relevant RFCs of framework-spec.
 2. Changes to public contracts are not made in the SDK repositories: they go through the RFC process of framework-spec and are then synced to each SDK.
 
 ## License

@@ -13,7 +13,7 @@
 
   <rule ref="PSR12"/>
 
-  <!-- 测试里的 JSON 夹具按原样写在一行，便于与 Go SDK 的用例逐条对照；源码仍按 120 列 -->
+  <!-- 测试里的 JSON 夹具按原样写在一行，便于与规范的一致性向量逐条对照；源码仍按 120 列 -->
   <rule ref="Generic.Files.LineLength">
     <exclude-pattern>tests/*</exclude-pattern>
   </rule>

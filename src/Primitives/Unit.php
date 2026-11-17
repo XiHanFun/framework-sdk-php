@@ -7,7 +7,8 @@ namespace XiHan\Framework\Primitives;
 /**
  * 没有值的成功结果的值：`Result<Unit>`。
  *
- * 只有一个实例 `Unit::Value`；线上编码为空对象 `{}`，与 Go SDK 的 `Result[Unit]` 一致。
+ * 只有一个实例 `Unit::Value`。单独写出时（如作为操作的响应）是空对象 `{}`；`Result<Unit>` 的线上编码只写
+ * `{"ok":true}`，不带 value（RFC-0001「Result」）。
  */
 enum Unit implements \JsonSerializable
 {

@@ -10,7 +10,7 @@ use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Unit;
 
 /**
- * 用名字与闭包组成的中间件（Go SDK 的 `pipeline.Func`）。
+ * 用名字与闭包组成的中间件：不必为每个中间件写一个类。
  */
 final readonly class ClosureMiddleware implements Middleware
 {

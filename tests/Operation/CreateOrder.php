@@ -24,7 +24,7 @@ final readonly class CreateOrder
     }
 
     /**
-     * 用核对过的值创建请求；没有 quantity 按 0（与 Go 的零值一致）。
+     * 用核对过的值创建请求；没有 quantity 按 0，让缺少可选成员的请求走到处理函数的校验。
      */
     public static function create(mixed $value): self
     {
