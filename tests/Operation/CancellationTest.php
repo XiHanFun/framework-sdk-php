@@ -20,17 +20,11 @@ use XiHan\Framework\Tests\Invocation\ManualClock;
 /**
  * 取消与截止时间只经令牌通知（RFC-0003 第 1 条，ADR-0236）：调用器不强行中止处理函数，取消异常与写成结果的取消由
  * Resilience 阶段的截止时间步骤归因。
+ *
+ * 核心五块不依赖 amphp，按类名认出它的取消异常；amphp 是插件运行时的开发依赖，这里用的是它真实的类。
  */
 final class CancellationTest extends TestCase
 {
-    public static function setUpBeforeClass(): void
-    {
-        // SDK 不依赖 amphp：测试用一个同名的类代替它的取消异常
-        if (!class_exists(CancelledException::class)) {
-            require_once dirname(__DIR__) . '/Fixtures/AmpCancelledException.php';
-        }
-    }
-
     public function testResultsReturnedAfterTheTokenFiresStand(): void
     {
         $source = new CancellationSource();
@@ -67,7 +61,7 @@ final class CancellationTest extends TestCase
                     $clock->advance(2000);
                 }
 
-                throw new CancelledException('cancelled');
+                throw new CancelledException();
             });
             $context = Context::create(cancellation: $source->cancellation(), timeout: 1.0, clock: $clock);
             $error = $invoker->invoke($context, new Request('orders.get'))->outcome->error();
@@ -79,7 +73,7 @@ final class CancellationTest extends TestCase
         $invoker = self::invoker(static function () use ($source): Result {
             $source->cancel();
 
-            throw new CancelledException('cancelled');
+            throw new CancelledException();
         });
         $typed = $invoker->invokeTyped(Context::create(cancellation: $source->cancellation()), 'orders.get', JsonObject::of(), 'mixed');
         self::assertSame('KERNEL_CANCELLED_001', $typed->error()?->code);
@@ -106,7 +100,7 @@ final class CancellationTest extends TestCase
     public function testCancellationsNoTokenExplainsReachTheCaller(): void
     {
         // 截止时间与调用方的令牌都没有触发：取消不归调用器，也不按未处理的异常翻译，原样抛给调用方（与 .NET 一致）
-        $invoker = self::invoker(static fn (): Result => throw new CancelledException('elsewhere'));
+        $invoker = self::invoker(static fn (): Result => throw new CancelledException());
         $this->expectException(CancelledException::class);
         $invoker->invoke(Context::create(timeout: 1.0, clock: new ManualClock()), new Request('orders.get'));
     }

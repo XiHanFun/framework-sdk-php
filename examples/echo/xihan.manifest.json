@@ -1,0 +1,40 @@
+{
+  "$schema": "https://spec.xihanfun.com/manifest/v1.json",
+  "id": "xihan.samples.echo-php",
+  "package": "xihanfun/xihan-framework",
+  "version": "0.1.0",
+  "primitives": "1",
+  "stability": "experimental",
+  "kind": "plugin",
+  "isolation": "out-of-process",
+  "requires": [
+    {
+      "id": "kernel.plugins",
+      "version": "1"
+    }
+  ],
+  "contributes": {
+    "operations": [
+      "echoes.create",
+      "echoes.crash",
+      "echoes.relay",
+      "echoes.stream",
+      "events.list",
+      "events.publish"
+    ],
+    "config": {
+      "section": "XiHan:Echo"
+    },
+    "health": [
+      "echo"
+    ]
+  },
+  "activation": [
+    "onStartup"
+  ],
+  "permissions": [
+    "capability:kernel.pipeline",
+    "capability:messaging.queue"
+  ],
+  "entry": "echo"
+}

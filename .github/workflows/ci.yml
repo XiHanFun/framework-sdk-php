@@ -1,6 +1,7 @@
 name: CI
 
-# PHP SDK 的门禁：格式检查（PSR-12）、静态检查（PHPStan 最高级别）与全部测试（含读取规范一致性向量的测试）。
+# PHP SDK 的门禁：格式检查（PSR-12）、静态检查（PHPStan 最高级别）与全部测试（含读取规范一致性向量的测试，以及用规范的
+# 黑盒运行器验证示例插件的一致性测试，它需要 Go）；另核对插件协议的生成代码与 spec/plugin/plugin.proto 一致。
 on:
   push:
     branches: [main]
@@ -34,9 +35,16 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: json
+          extensions: json, mbstring, openssl
           tools: composer:v2
           coverage: none
+
+      # 一致性测试以 go run 从子模块运行黑盒运行器；没有 Go 时测试会跳过，CI 必须装上
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: spec/conformance/go.mod
+          cache-dependency-path: spec/conformance/go.sum
 
       - name: 安装依赖
         run: composer install --no-interaction --no-progress --prefer-dist
@@ -49,3 +57,34 @@ jobs:
 
       - name: 测试
         run: composer test
+
+  protocol:
+    name: 协议代码与 plugin.proto 一致
+    runs-on: ubuntu-latest
+    env:
+      # 与 scripts/generate-plugin-protocol.php 里的版本一致
+      PROTOC_VERSION: '36.2'
+    steps:
+      - name: 检出（含规范 submodule）
+        uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: 安装 PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          coverage: none
+
+      - name: 安装 protoc
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/protoc.zip" "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          unzip -q "$RUNNER_TEMP/protoc.zip" -d "$RUNNER_TEMP/protoc"
+          echo "$RUNNER_TEMP/protoc/bin" >> "$GITHUB_PATH"
+
+      # 生成物有改动或多出文件都算不一致
+      - name: 重新生成并核对
+        run: |
+          php scripts/generate-plugin-protocol.php
+          git add --intent-to-add src/Plugin/Protocol
+          git diff --exit-code -- src/Plugin/Protocol

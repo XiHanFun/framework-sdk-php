@@ -1,6 +1,11 @@
-# 静态检查：最高级别，源码与测试一起分析
+# 静态检查：最高级别，源码、测试、示例与脚本一起分析；protoc 生成的协议类只用于发现类型，不分析
 parameters:
   level: max
   paths:
     - src
     - tests
+    - examples
+    - scripts
+  excludePaths:
+    analyse:
+      - src/Plugin/Protocol

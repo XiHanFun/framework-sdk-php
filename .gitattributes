@@ -1,9 +1,14 @@
 # 默认使用 LF
 * text=auto eol=lf
 
+# protoc 生成的插件协议代码：评审时折叠，改协议后用 scripts/generate-plugin-protocol.php 重新生成
+/src/Plugin/Protocol/** linguist-generated=true
+
 # 发布归档（Composer dist）只含运行时代码与许可、说明
 /spec export-ignore
 /tests export-ignore
+/examples export-ignore
+/scripts export-ignore
 /.github export-ignore
 /.editorconfig export-ignore
 /.gitattributes export-ignore

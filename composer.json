@@ -1,6 +1,6 @@
 {
   "name": "xihanfun/xihan-framework",
-  "description": "XiHan Framework SDK for PHP: primitives, manifest, invocation context, pipeline and operations.",
+  "description": "XiHan Framework SDK for PHP: primitives, manifest, invocation context, pipeline, operations and the out-of-process plugin runtime.",
   "type": "library",
   "license": "MIT",
   "keywords": ["xihan", "framework", "plugin", "pipeline", "manifest"],
@@ -18,9 +18,21 @@
     "ext-json": "*"
   },
   "require-dev": {
+    "amphp/amp": "^3.1",
+    "amphp/byte-stream": "^2.1",
+    "amphp/hpack": "^3.2",
+    "amphp/http": "^2.1",
+    "amphp/socket": "^2.4",
+    "google/protobuf": "^5.36",
     "phpstan/phpstan": "^2.1",
     "phpunit/phpunit": "^12.0",
+    "revolt/event-loop": "^1.0",
     "squizlabs/php_codesniffer": "^3.13"
+  },
+  "suggest": {
+    "amphp/socket": "Required by the out-of-process plugin runtime (namespace Plugin): sockets and the event loop (^2.4).",
+    "amphp/http": "Required by the out-of-process plugin runtime (namespace Plugin): HTTP/2 frames and HPACK (^2.1).",
+    "google/protobuf": "Required by the out-of-process plugin runtime (namespace Plugin): the xihan.plugin.v1 messages (^5.36)."
   },
   "autoload": {
     "psr-4": {
@@ -29,6 +41,7 @@
   },
   "autoload-dev": {
     "psr-4": {
+      "XiHan\\Framework\\Examples\\Echo\\": "examples/echo/src/",
       "XiHan\\Framework\\Tests\\": "tests/"
     }
   },
