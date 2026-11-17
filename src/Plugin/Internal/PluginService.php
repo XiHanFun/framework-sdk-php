@@ -285,7 +285,7 @@ final class PluginService
             if ($this->options->hooks->health === null) {
                 $this->lifecycle->transition(LifecycleState::Ready);
             } else {
-                $this->probe($this->options->hooks->health);
+                $this->probe($this->options->hooks->health, true);
             }
             $this->logger->information('Started.', [
                 'operations' => count($this->invoker->registry()),
@@ -669,12 +669,14 @@ final class PluginService
     }
 
     /**
-     * 求一次健康回调并照办（lifecycle.md §7.4）：只有 Ready、Degraded、Failed 改变状态（按合法迁移表，Failed 之后不再回来）；
-     * 未声明的健康项丢掉；回调抛出时这一次是 Degraded，原因为 plugins.process.failed（`phase` 为 health），没有健康项。
+     * 求一次健康回调并照办（lifecycle.md §7.3、§7.4）：只有 Ready、Degraded、Failed 改变状态（按合法迁移表，Failed 之后不再
+     * 回来），报其他状态的不改变状态，Start 时则按 Ready；未声明的健康项丢掉；回调抛出时这一次是 Degraded，原因为
+     * plugins.process.failed（`phase` 为 health），没有健康项，状态与回调报了 Degraded 一样迁到 Degraded。
      *
      * @param \Closure(): Health $hook
+     * @param bool $starting 是否 Start 时求的那一次：Start 应答之后的状态只能是 Ready、Degraded 或 Failed
      */
-    private function probe(\Closure $hook): void
+    private function probe(\Closure $hook, bool $starting = false): void
     {
         $reported = $this->reportedHealth($hook);
         $items = $this->declaredItems($reported);
@@ -683,6 +685,8 @@ final class PluginService
         $this->reported = $reported->error;
         if (in_array($reported->state, self::ADOPTED, true)) {
             $this->lifecycle->transition($reported->state, $reported->error);
+        } elseif ($starting) {
+            $this->lifecycle->transition(LifecycleState::Ready);
         }
         if ($changed) {
             $this->lifecycle->signal();

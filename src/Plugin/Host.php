@@ -99,7 +99,7 @@ final class Host
      */
     public function invoke(Context $context, string $operation, string $payload = ''): Response
     {
-        $refused = $this->refuse($context, self::PERMISSION_INVOKE);
+        $refused = $this->refuse($context, CallbackFailures::INVOKE, $operation);
         if ($refused !== null) {
             return new Response(Result::fail($refused), null);
         }
@@ -143,7 +143,7 @@ final class Host
         if ($count === 0) {
             return [];
         }
-        $refused = $this->refuse($context, self::PERMISSION_PUBLISH);
+        $refused = $this->refuse($context, CallbackFailures::PUBLISH, '');
         if ($refused !== null) {
             return array_fill(0, $count, Result::fail($refused));
         }
@@ -206,20 +206,42 @@ final class Host
     }
 
     /**
-     * 发出之前的核对，依次是：有可用的回调端点（handshake.md §4，每次回调都以它失败）、权限、上下文的租户（与宿主的顺序
-     * 相同）；都合时为 null。
+     * 发出之前的核对（invocation.md §5），依次是：有可用的回调端点（handshake.md §4，每次回调都以它失败）、权限、上下文的
+     * 租户（与宿主的顺序相同），最后是回调上下文的截止时间与取消；都合时为 null。
      */
-    private function refuse(Context $context, string $permission): ?Error
+    private function refuse(Context $context, string $rpc, string $operation): ?Error
     {
         if ($this->client === null) {
             return PluginErrors::hostUnavailable($this->pluginId, PluginErrors::REASON_NO_ENDPOINT);
         }
+        $permission = CallbackFailures::permission($rpc);
         if (!in_array($permission, $this->declared, true) || !in_array($permission, $this->granted, true)) {
             return PluginErrors::callbackDenied($this->pluginId, $permission);
         }
         $tenant = $context->tenant();
         if ($tenant !== null && !$this->tenants->admits($tenant)) {
             return PluginErrors::tenantDenied($this->pluginId, $tenant);
+        }
+        // 截止时间已过或已被取消也不发请求，结果与映射表相应的一行相同；先看截止时间：过期的截止令牌同样报已取消
+        if ($context->isExpired($context->clock()->now())) {
+            return CallbackFailures::map(
+                $rpc,
+                GrpcStatus::DEADLINE_EXCEEDED,
+                'The deadline passed before the callback was sent.',
+                true,
+                $this->pluginId,
+                $operation,
+            );
+        }
+        if ($context->cancellation()->isRequested()) {
+            return CallbackFailures::map(
+                $rpc,
+                GrpcStatus::CANCELLED,
+                'The callback context was cancelled before the callback was sent.',
+                true,
+                $this->pluginId,
+                $operation,
+            );
         }
 
         return null;

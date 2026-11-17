@@ -292,6 +292,7 @@ final class RuntimeTest extends TestCase
             return match ($this->report) {
                 'throw' => throw new \RuntimeException('/secret/path'),
                 'failed' => new Health(LifecycleState::Failed, [], Error::literal('ITEMS_UNEXPECTED_001', 'gone')),
+                'started' => new Health(LifecycleState::Started, [new HealthItem('items')]),
                 default => new Health(LifecycleState::Ready, [new HealthItem('items')]),
             };
         };
@@ -310,6 +311,14 @@ final class RuntimeTest extends TestCase
 
             $this->report = 'ready';
             self::assertHealth($harness->health(), LifecycleState::Ready, ['items']);
+            // 可服务期间抛出：这一次是 Degraded，状态也迁到 Degraded；之后的结果照常决定状态
+            $this->report = 'throw';
+            self::assertHealth($harness->health(), LifecycleState::Degraded, []);
+            $this->report = 'started';
+            // 可服务期间报其他状态的不改变状态
+            self::assertHealth($harness->health(), LifecycleState::Degraded, ['items']);
+            $this->report = 'ready';
+            self::assertHealth($harness->health(), LifecycleState::Ready, ['items']);
             $this->report = 'failed';
             self::assertHealth($harness->health(), LifecycleState::Failed, []);
             $calls = $this->healthCalls;
@@ -323,6 +332,24 @@ final class RuntimeTest extends TestCase
             self::assertTrue($harness->stop()->getStatus()?->getOk());
             self::assertSame(0, $harness->exitCode());
             self::assertSame(['stop:unload'], $this->events);
+        } finally {
+            $harness->close();
+        }
+    }
+
+    public function testStartTreatsOtherReportedStatesAsReady(): void
+    {
+        $this->health = fn (): Health => $this->report === 'started'
+            ? new Health(LifecycleState::Started, [new HealthItem('items')])
+            : new Health(LifecycleState::Draining);
+        $this->report = 'started';
+        $harness = $this->started();
+        try {
+            // Start 时健康回调报了 Ready、Degraded、Failed 之外的状态：按 Ready（lifecycle.md §7.3）
+            self::assertHealth($harness->health(), LifecycleState::Ready, ['items']);
+            $this->report = 'draining';
+            self::assertHealth($harness->health(), LifecycleState::Ready, []);
+            self::assertTrue($harness->invoke('items.get', '{"id":"a"}')->getStatus()?->getOk());
         } finally {
             $harness->close();
         }

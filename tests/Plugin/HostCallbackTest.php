@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Tests\Plugin;
 
 use PHPUnit\Framework\TestCase;
+use XiHan\Framework\Invocation\CancellationSource;
 use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Operation\Contract;
 use XiHan\Framework\Operation\Registry;
@@ -106,6 +107,71 @@ final class HostCallbackTest extends TestCase
             $publish = $host->received[1]['request'];
             self::assertInstanceOf(V1\PublishRequest::class, $publish);
             self::assertCount(2, $publish->getEnvelopes());
+        } finally {
+            $harness->close();
+            $host->close();
+        }
+    }
+
+    public function testCallbacksOfAnExpiredOrCancelledContextAreNotSent(): void
+    {
+        $host = new FakeHost();
+        $harness = $this->started((string) $host->endpoint());
+        try {
+            $this->scenario = static function (Context $context, Host $client): mixed {
+                $expired = Context::create(deadline: new \DateTimeImmutable('-1 second'), baggage: $context->baggage());
+                $source = new CancellationSource();
+                $source->cancel();
+                $cancelled = Context::create(cancellation: $source->cancellation(), baggage: $context->baggage());
+                $describe = static fn (Result $result): string => self::describe($result->error());
+
+                return [
+                    'expired' => self::describe($client->invoke($expired, 'orders.get')->outcome->error()),
+                    'cancelled' => self::describe($client->invoke($cancelled, 'orders.get')->outcome->error()),
+                    'expiredBatch' => array_map($describe, $client->publish($expired, [new Envelope('a.b', '1', 'urn:x', 't'), new Envelope('a.b', '2', 'urn:x', 't')])),
+                    'cancelledBatch' => array_map($describe, $client->publish($cancelled, [new Envelope('a.b', '1', 'urn:x', 't')])),
+                ];
+            };
+            $result = self::payload($harness->invoke('relay.run', '{}', ['xihan.tenant' => 't1']));
+            // 截止时间已过按 DeadlineExceeded，已被取消按「Cancelled，取消信号已触发」，都不发请求
+            $timeout = 'KERNEL_TIMEOUT_001 kernel.invocation.deadline_exceeded null';
+            $cancelled = 'KERNEL_CANCELLED_001 kernel.invocation.cancelled null';
+            self::assertSame($timeout, $result['expired']);
+            self::assertSame($cancelled, $result['cancelled']);
+            self::assertSame([$timeout, $timeout], $result['expiredBatch']);
+            self::assertSame([$cancelled], $result['cancelledBatch']);
+            self::assertSame([], $host->received);
+        } finally {
+            $harness->close();
+            $host->close();
+        }
+    }
+
+    public function testCallbackTraceParentIsWrittenPerRfc0003(): void
+    {
+        $host = new FakeHost();
+        $harness = $this->started((string) $host->endpoint());
+        try {
+            $this->scenario = static function (Context $context, Host $client): mixed {
+                return $client->invoke($context, 'orders.get')->payload;
+            };
+            // 写出的标志只有采样位，上游的「不采样」原样传下去，不合文法的开始新的追踪（RFC-0003 规则 7）
+            $cases = [
+                '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-03' => '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+                '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00' => '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00',
+            ];
+            foreach ($cases as $incoming => $written) {
+                $harness->invoke('relay.run', '{}', metadata: (new V1\InvocationMetadata())->setTraceParent($incoming));
+                $sent = end($host->received);
+                self::assertIsArray($sent);
+                self::assertSame($written, $sent['metadata']?->getTraceParent(), $incoming);
+            }
+            $harness->invoke('relay.run', '{}', metadata: (new V1\InvocationMetadata())->setTraceParent('01-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'));
+            $sent = end($host->received);
+            self::assertIsArray($sent);
+            $fresh = (string) $sent['metadata']?->getTraceParent();
+            self::assertMatchesRegularExpression('/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/D', $fresh);
+            self::assertStringNotContainsString('0af7651916cd43dd8448eb211c80319c', $fresh);
         } finally {
             $harness->close();
             $host->close();

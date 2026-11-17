@@ -62,9 +62,9 @@ final class Protocol
     }
 
     /**
-     * 读入宿主写来的 Error（invocation.md §3「读入」）：code 不合文法时整个错误换成 PLUGINS_UNEXPECTED_001 +
-     * plugins.process.failed；message_key 合文法的按键处理（不取 text），否则是自由文本错误，文案取 text，text 为空时取
-     * code；details 为空、通不过共同 JSON 读取检查或不是对象时当作没有细节；inner 同此。
+     * 读入宿主写来的 Error（invocation.md §3「读入」，向量 error-reading.json）：code 不合文法时整个错误换成
+     * PLUGINS_UNEXPECTED_001 + plugins.process.failed（`phase` 一律 invoke，不论是哪个 RPC，原来的 inner 丢掉）；message_key
+     * 合文法的按键处理（不取 text），否则是自由文本错误，文案取 text，text 为空时取 code；details 按 details() 读；inner 同此。
      */
     public static function fromProtoError(V1\Error $error, string $pluginId): Error
     {
@@ -244,12 +244,14 @@ final class Protocol
     }
 
     /**
-     * 读 details：空、通不过共同 JSON 读取检查或不是对象时没有细节。
+     * 读 details（invocation.md §3）：空、只有空白、空对象、通不过共同 JSON 读取检查、不是对象，或任何一层有读成双精度会
+     * 溢出（±∞）的数时没有细节；下溢的数读成 0，超出 64 位的整数读成双精度（值模型本来就这样读）。
      *
      * @return array<array-key, mixed>
      */
     private static function details(string $text): array
     {
+        // 只有空白的文本在共同读取检查里是语法错误
         if ($text === '') {
             return [];
         }
@@ -258,7 +260,30 @@ final class Protocol
         } catch (InvalidArgumentException) {
             return [];
         }
+        if (!$decoded instanceof JsonObject || !self::isFinite($decoded)) {
+            return [];
+        }
 
-        return $decoded instanceof JsonObject ? $decoded->toArray() : [];
+        // 空对象的成员表是空数组，与没有细节相同
+        return $decoded->toArray();
+    }
+
+    /**
+     * 判断值里（含各层的数组与对象）没有无穷：值模型把超出双精度的数读成 ±∞。
+     */
+    private static function isFinite(mixed $value): bool
+    {
+        if (is_float($value)) {
+            return is_finite($value);
+        }
+        if ($value instanceof JsonObject || is_array($value)) {
+            foreach ($value as $item) {
+                if (!self::isFinite($item)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 }

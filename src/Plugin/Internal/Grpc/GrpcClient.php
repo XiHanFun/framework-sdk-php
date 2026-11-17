@@ -61,7 +61,12 @@ final class GrpcClient
         if ($timeout !== null && $timeout <= 0.0) {
             throw new GrpcException(GrpcStatus::DEADLINE_EXCEEDED, 'The deadline passed before the call started.');
         }
-        $connection = $this->connection($cancellation);
+        try {
+            $connection = $this->connection($cancellation);
+        } catch (CancelledException $exception) {
+            // 等别的调用正在建立的连接时调用方取消了：与调用中途取消一样以 CANCELLED 结束，不把 amphp 的异常交给调用方
+            throw new GrpcException(GrpcStatus::CANCELLED, 'The call was canceled.', [], $exception);
+        }
         $stream = $connection->openStream();
         $headers = [
             [':method', 'POST'],
@@ -129,6 +134,7 @@ final class GrpcClient
      * 返回可用的连接：没有或已不可用时建立新的。
      *
      * @throws GrpcException 连不上
+     * @throws CancelledException 等别的调用正在建立的连接时调用方取消了
      */
     private function connection(?Cancellation $cancellation): Http2Connection
     {
