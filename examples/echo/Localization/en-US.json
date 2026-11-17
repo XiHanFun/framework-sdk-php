@@ -1,5 +1,4 @@
 {
   "echo.configuration.invalid": "The configuration section XiHan:Echo is not valid: {reason}",
-  "echo.host.unavailable": "The host gave the plugin no callback endpoint.",
   "echo.text.missing": "The text to echo must not be empty."
 }

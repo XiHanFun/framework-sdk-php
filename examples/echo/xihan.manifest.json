@@ -18,7 +18,6 @@
       "echoes.create",
       "echoes.crash",
       "echoes.relay",
-      "echoes.stream",
       "events.list",
       "events.publish"
     ],

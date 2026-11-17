@@ -14,53 +14,76 @@ use XiHan\Framework\Plugin\Internal\Protocol;
 use XiHan\Framework\Plugin\Protocol\V1;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\LifecycleState;
+use XiHan\Framework\Primitives\MessageCatalog;
+use XiHan\Framework\Primitives\MessageScope;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Tests\Invocation\ManualClock;
 
 /**
- * 协议消息与 SDK 类型的转换：错误（invocation.md §3，RFC-0001）与上下文（invocation.md §2，RFC-0003）。
+ * 协议消息与 SDK 类型的转换：错误的写出与读入（invocation.md §3，RFC-0001）、上下文的还原与回调的元数据
+ * （invocation.md §2、§5，RFC-0003）、信封与健康。
  */
 final class ProtocolTest extends TestCase
 {
-    public function testErrorsRoundTripThroughTheProtocol(): void
+    public function testErrorsAreWrittenWithoutRenderingTheirKeys(): void
     {
-        $error = Error::validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid', ['min' => 1, 'ratio' => 2.0, 'tags' => ['a']]);
-        $error = Error::unexpected('ORDERS_UNEXPECTED_001', 'orders.failed', ['id' => 'o1'], $error);
-        $encoded = Protocol::toProtoError($error);
-        self::assertSame('ORDERS_UNEXPECTED_001', $encoded->getCode());
-        self::assertSame('orders.failed', $encoded->getMessageKey());
-        self::assertSame('{"id":"o1"}', $encoded->getDetails());
-        self::assertSame('{"min":1,"ratio":2.0,"tags":["a"]}', $encoded->getInner()?->getDetails());
-        // 没有目录解析得出时不写文案，宿主按键翻译
-        self::assertSame('', $encoded->getText());
-
-        $decoded = Protocol::fromProtoError($encoded);
-        self::assertSame('ORDERS_UNEXPECTED_001', $decoded->code);
-        self::assertSame('orders.failed', $decoded->messageKey);
-        self::assertSame(['id' => 'o1'], $decoded->details);
-        self::assertSame(2.0, $decoded->inner?->details['ratio']);
-        self::assertSame('ORDERS_VALIDATION_001', $decoded->inner->code);
-    }
-
-    public function testKernelAndLiteralErrorsCarryText(): void
-    {
-        $encoded = Protocol::toProtoError(Error::literal('ORDERS_CONFLICT_001', 'stale'));
-        self::assertSame('stale', $encoded->getText());
-        self::assertSame('', $encoded->getMessageKey());
+        // 进程默认区域能解析这个键，写出时照样不渲染：由宿主按目录翻译成调用方的语言
+        MessageScope::setDefault(new MessageCatalog(['en-US' => ['orders.failed' => 'Order {id} failed.']]), 'en-US');
+        try {
+            $inner = Error::validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid', ['min' => 1, 'ratio' => 2.0, 'tags' => ['a']]);
+            $error = Error::unexpected('ORDERS_UNEXPECTED_001', 'orders.failed', ['id' => 'o1'], $inner)->withText('Order o1 failed.');
+            $encoded = Protocol::toProtoError($error);
+            self::assertSame('ORDERS_UNEXPECTED_001', $encoded->getCode());
+            self::assertSame('orders.failed', $encoded->getMessageKey());
+            self::assertSame('', $encoded->getText());
+            self::assertSame('{"id":"o1"}', $encoded->getDetails());
+            self::assertSame('{"min":1,"ratio":2.0,"tags":["a"]}', $encoded->getInner()?->getDetails());
+        } finally {
+            MessageScope::setDefault(null, 'en-US');
+        }
+        // 只有自由文本错误写 text；没有细节时 details 为空
+        $literal = Protocol::toProtoError(Error::literal('ORDERS_CONFLICT_001', 'stale'));
+        self::assertSame('stale', $literal->getText());
+        self::assertSame('', $literal->getMessageKey());
+        self::assertSame('', $literal->getDetails());
         $kernel = Protocol::toProtoError(Error::notFound('KERNEL_NOTFOUND_001', 'kernel.operation.unknown', ['id' => 'x.y']));
-        self::assertSame("Operation 'x.y' is not registered.", $kernel->getText());
+        self::assertSame('', $kernel->getText());
     }
 
-    public function testInvalidRemoteErrorsAreKeptReadable(): void
+    public function testErrorsFromTheHostAreReadPerTheRules(): void
     {
-        $remote = (new V1\Error())->setCode('not a code')->setText('boom')->setDetails('{"a":1,"a":2}');
-        $decoded = Protocol::fromProtoError($remote);
-        self::assertSame('PLUGINS_UNEXPECTED_001', $decoded->code);
-        self::assertSame('boom', $decoded->text);
-        self::assertSame(['code' => 'not a code'], $decoded->details);
+        $decoded = Protocol::fromProtoError((new V1\Error())
+            ->setCode('ORDERS_UNEXPECTED_001')
+            ->setMessageKey('orders.failed')
+            ->setText('rendered')
+            ->setDetails('{"id":"o1"}')
+            ->setInner((new V1\Error())->setCode('ORDERS_VALIDATION_001')->setMessageKey('orders.quantity.invalid')->setDetails('{"min":1}')), 'p');
+        self::assertSame('orders.failed', $decoded->messageKey);
+        // 带键的错误按键处理，不取 text
+        self::assertNull($decoded->text);
+        self::assertSame(['id' => 'o1'], $decoded->details);
+        self::assertSame(['min' => 1], $decoded->inner?->details);
 
-        self::assertTrue(Protocol::fromStatus((new V1\Status())->setOk(true), 'p')->isOk());
-        self::assertSame('PLUGINS_UNEXPECTED_001', Protocol::fromStatus((new V1\Status())->setOk(false), 'p')->error()?->code);
+        // 码不合文法：整个错误换成 plugins.process.failed，原来的细节与内部错误都不要
+        $invalid = Protocol::fromProtoError((new V1\Error())->setCode('not a code')->setText('boom')->setDetails('{"a":1}'), 'p');
+        self::assertSame('PLUGINS_UNEXPECTED_001', $invalid->code);
+        self::assertSame('plugins.process.failed', $invalid->messageKey);
+        self::assertSame(['id' => 'p', 'phase' => 'invoke', 'reason' => "invalid error code 'not a code'"], $invalid->details);
+        self::assertNull($invalid->inner);
+
+        // 键不合文法：自由文本错误，text 为空时取码；details 为空、不合 JSON、重复成员或不是对象都当作没有
+        foreach (['', '{"a":', '{"a":1,"a":2}', '[1]', '"x"', 'null'] as $details) {
+            $literal = Protocol::fromProtoError((new V1\Error())->setCode('ORDERS_CONFLICT_001')->setMessageKey('Not A Key')->setDetails($details), 'p');
+            self::assertNull($literal->messageKey, $details);
+            self::assertSame('ORDERS_CONFLICT_001', $literal->text, $details);
+            self::assertSame([], $literal->details, $details);
+        }
+        self::assertSame('stale', Protocol::fromProtoError((new V1\Error())->setCode('ORDERS_CONFLICT_001')->setText('stale'), 'p')->text);
+
+        self::assertTrue(Protocol::fromStatus((new V1\Status())->setOk(true), 'p', 'orders.get')->isOk());
+        $missing = Protocol::fromStatus((new V1\Status())->setOk(false), 'p', 'orders.get')->error();
+        self::assertSame(['id' => 'p', 'phase' => 'orders.get', 'reason' => 'the host reported a failure without an error'], $missing?->details);
+        self::assertSame('PLUGINS_UNEXPECTED_001', Protocol::fromStatus(null, 'p', 'publish')->error()?->code);
         self::assertTrue(Protocol::toStatus(Result::success())->getOk());
     }
 
@@ -69,40 +92,37 @@ final class ProtocolTest extends TestCase
         $clock = new ManualClock();
         $metadata = (new V1\InvocationMetadata())
             ->setTraceParent('00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01')
-            ->setDeadline('2026-11-17T10:00:00.1234567Z')
-            ->setBaggage(['xihan.tenant' => 't1', 'xihan.correlation' => 'c1', 'xihan.unregistered' => 'x']);
-        $context = Protocol::context($metadata, 30.0, (new CancellationSource())->cancellation(), $clock);
+            ->setTraceState('vendor=opaque')
+            ->setDeadline('2026-11-17T10:00:00.1234567+00:00')
+            ->setBaggage(['xihan.tenant' => 't1', 'xihan.principal' => 'alice', 'xihan.unregistered' => 'x']);
+        $context = Protocol::context($metadata, null, (new CancellationSource())->cancellation(), $clock);
         self::assertSame('0af7651916cd43dd8448eb211c80319c', $context->traceId());
+        self::assertSame('b7ad6b7169203331', $context->spanId());
         self::assertSame('2026-11-17T10:00:00.123456+00:00', $context->deadline()?->format('Y-m-d\TH:i:s.uP'));
-        // 只收已登记的 Baggage 键
-        self::assertSame(['xihan.tenant' => 't1', 'xihan.correlation' => 'c1'], $context->baggage());
+        // 只留已登记的键；xihan.principal 原样交给作者
+        self::assertSame(['xihan.tenant' => 't1', 'xihan.principal' => 'alice'], $context->baggage());
 
-        // 没有 deadline 时取 grpc-timeout
-        $fallback = Protocol::context(new V1\InvocationMetadata(), 1.5, (new CancellationSource())->cancellation(), $clock);
-        self::assertEqualsWithDelta(1.5, $fallback->remainingTime($clock->now()), 0.001);
+        // traceparent 不合文法：没有父 Span，开始新的追踪
+        $fresh = Protocol::context((new V1\InvocationMetadata())->setTraceParent('00-XYZ-1-01'), null, (new CancellationSource())->cancellation(), $clock);
+        self::assertNotSame('0af7651916cd43dd8448eb211c80319c', $fresh->traceId());
+        self::assertSame(32, strlen($fresh->traceId()));
         self::assertNull(Protocol::context(null, null, (new CancellationSource())->cancellation(), $clock)->deadline());
     }
 
-    public function testDeadlinesFollowRfc3339(): void
-    {
-        self::assertSame('2026-11-17T02:00:00.000000Z', Protocol::formatDeadline(Protocol::parseDeadline('2026-11-17T10:00:00+08:00') ?? self::fail()));
-        self::assertNotNull(Protocol::parseDeadline('2026-11-17t10:00:00z'));
-        foreach (['', '2026-11-17', '2026-13-01T00:00:00Z', '2026-11-17T25:00:00Z', '2026-11-17T10:00:00', "2026-11-17T10:00:00Z\n"] as $text) {
-            self::assertNull(Protocol::parseDeadline($text), $text);
-        }
-    }
-
-    public function testContextsAreWrittenAsInvocationMetadata(): void
+    public function testCallbackMetadataComesFromTheContext(): void
     {
         $context = Context::create(
-            deadline: new \DateTimeImmutable('2026-11-17T10:00:00.5+00:00'),
+            deadline: new \DateTimeImmutable('2026-11-17T18:00:00.5+08:00'),
             traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00',
             baggage: ['xihan.tenant' => 't1', 'xihan.other' => 'kept-in-process'],
         );
         $metadata = Protocol::metadata($context);
         self::assertSame('00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00', $metadata->getTraceParent());
-        self::assertSame('2026-11-17T10:00:00.500000Z', $metadata->getDeadline());
+        // UTC、七位小数、+00:00
+        self::assertSame('2026-11-17T10:00:00.5000000+00:00', $metadata->getDeadline());
+        self::assertSame('', $metadata->getTraceState());
         self::assertSame(['xihan.tenant' => 't1'], iterator_to_array($metadata->getBaggage()));
+        self::assertSame('', Protocol::metadata(Context::create())->getDeadline());
     }
 
     public function testEnvelopesAndHealthAreEncoded(): void

@@ -20,7 +20,7 @@ use function Amp\Socket\listen;
  *
  * Unix 域套接字放在本进程新建的私有目录里：目录名随机、权限 0700，已经存在就换一个名字（可能是别人抢先建的、指向
  * 别处的链接），套接字文件 0600，停止后删除套接字与目录。Windows 上 PHP 不能以非阻塞方式服务命名管道，用回环 TCP，
- * 同机的其他用户连得上，隔离只靠会话令牌。
+ * 同机的其他用户连得上，隔离只靠会话令牌（handshake.md §4）。自己生成的地址不含空白（§2）。
  *
  * @internal 不属于公开 API，随时可能改变。
  */
@@ -125,7 +125,8 @@ final class Listener
     private static function privateDirectory(): string
     {
         $base = rtrim(sys_get_temp_dir(), '/');
-        if (strlen($base) + 40 > self::MAX_SOCKET_PATH) {
+        // 握手行的地址不能含空白、必须是合法的 UTF-8（handshake.md §2）：临时目录的路径不合用或太长时改用 /tmp
+        if (strlen($base) + 40 > self::MAX_SOCKET_PATH || !Endpoint::isAddress($base)) {
             $base = '/tmp';
         }
         for ($attempt = 0; $attempt < 8; $attempt++) {

@@ -9,10 +9,10 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\LifecycleState;
 
 /**
- * 插件自报的健康（lifecycle.md §1、§4）：状态与健康项。
+ * 插件自报的健康（lifecycle.md §7.4）：状态与健康项。
  *
- * 运行中（Ready、Degraded）报 Ready、Degraded 或 Failed 会迁移运行时的状态；停止与失败之后以运行时的状态为准，
- * 自报的 Started、Draining 不改变状态。
+ * 只有 Ready、Degraded、Failed 改变运行时的状态（按合法迁移表，Failed 之后不再回来），自报的 Started、Draining 不改变状态；
+ * 健康项名不在清单 contributes.health 里的丢掉、不发给宿主。
  */
 final readonly class Health
 {

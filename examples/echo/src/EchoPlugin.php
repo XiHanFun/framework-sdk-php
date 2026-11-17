@@ -18,12 +18,11 @@ use XiHan\Framework\Plugin\HealthItem;
 use XiHan\Framework\Plugin\Hooks;
 use XiHan\Framework\Plugin\Host;
 use XiHan\Framework\Plugin\Logger;
-use XiHan\Framework\Plugin\OperationStream;
 use XiHan\Framework\Plugin\Options;
-use XiHan\Framework\Plugin\StreamingOperation;
 use XiHan\Framework\Plugin\Subscription;
 use XiHan\Framework\Plugin\SubscriptionMode;
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\LifecycleState;
 use XiHan\Framework\Primitives\RawJson;
@@ -34,9 +33,10 @@ use XiHan\Framework\Primitives\Unit;
 /**
  * 用本 SDK 写的回声插件：既是插件运行时的端到端用例（黑盒运行器的全部用例），也是 .NET 宿主加载 PHP 插件的示例。
  *
- * 操作：echoes.create（回声文本并附上配置的问候语与上下文）、echoes.relay（经宿主回调调用另一个操作）、echoes.crash
- * （故意让进程异常退出，运行器以 --exclude 排除）、echoes.stream（流式回声）、events.list（列出收到的事件 ID）、
- * events.publish（经宿主发布一条消息）。订阅 echo.events（竞争），同一主题的 echo.cleared 用广播。健康项 echo。
+ * 操作都是一元的（流式操作等 RFC-0011 的流式契约，invocation.md §1）：echoes.create（回声文本并附上配置的问候语与
+ * 上下文）、echoes.relay（经宿主回调调用另一个操作）、echoes.crash（故意让进程异常退出，运行器以 --exclude 排除）、
+ * events.list（列出收到的事件 ID）、events.publish（经宿主发布一条消息）。订阅 echo.events（竞争），同一主题的
+ * echo.cleared 用广播。健康项 echo。配置节 XiHan:Echo 的 Greeting 按 ASCII 不区分大小写读。
  */
 final class EchoPlugin
 {
@@ -111,31 +111,25 @@ final class EchoPlugin
                 configure: $plugin->configure(...),
                 health: static fn (): Health => new Health(LifecycleState::Ready, [new HealthItem('echo')]),
             ),
-            streams: [
-                new StreamingOperation(
-                    new Contract('echoes.stream', Stability::Experimental),
-                    $plugin->stream(...),
-                ),
-            ],
         );
     }
 
     /**
-     * 读配置节 XiHan:Echo 的 greeting。
+     * 读配置节 XiHan:Echo 的 Greeting：成员名不区分 ASCII 大小写，宿主写来的叶子都是字符串。
      *
      * @return Result<Unit>
      */
     private function configure(Configuration $configuration): Result
     {
-        $greeting = $configuration->section['greeting'] ?? '';
-        if (!is_string($greeting)) {
+        try {
+            $this->greeting = $configuration->string('Greeting') ?? '';
+        } catch (InvalidArgumentException) {
             return Result::fail(Error::validation(
                 'ECHO_VALIDATION_001',
                 'echo.configuration.invalid',
-                ['reason' => 'greeting must be a string'],
+                ['reason' => 'Greeting must be a string'],
             ));
         }
-        $this->greeting = $greeting;
 
         return Result::success();
     }
@@ -163,16 +157,13 @@ final class EchoPlugin
     }
 
     /**
-     * 经宿主回调调用另一个操作，把宿主的应答原样返回；没有回调端点时失败。
+     * 经宿主回调调用另一个操作，把宿主的应答原样返回；没有可用的回调端点时是运行时的 plugins.host.unavailable。
      *
      * @return Result<RawJson>
      */
     private function relay(Context $context, RelayEcho $request): Result
     {
-        $host = Host::of($context);
-        if ($host === null) {
-            return Result::fail(Error::unavailable('ECHO_UNAVAILABLE_001', 'echo.host.unavailable'));
-        }
+        $host = Host::of($context) ?? throw new \LogicException('The runtime puts the host client into every context.');
         $response = $host->invoke($context, $request->operation, $request->payload->json ?? '{}');
         $error = $response->outcome->error();
         if ($error !== null) {
@@ -213,10 +204,7 @@ final class EchoPlugin
      */
     private function publish(Context $context, JsonObject $request): Result
     {
-        $host = Host::of($context);
-        if ($host === null) {
-            return Result::fail(Error::unavailable('ECHO_UNAVAILABLE_001', 'echo.host.unavailable'));
-        }
+        $host = Host::of($context) ?? throw new \LogicException('The runtime puts the host client into every context.');
         $type = $request['type'] ?? 'echo.published';
         [$outcome] = $host->publish($context, [new Envelope(
             'echo.events',
@@ -228,20 +216,6 @@ final class EchoPlugin
         $error = $outcome->error();
 
         return $error === null ? Result::ok(['published' => true]) : Result::fail($error);
-    }
-
-    /**
-     * 流式回声：把调用方的每个 chunk 包成 {"echo": …} 发回，调用方结束时正常结束。
-     *
-     * @return Result<Unit>
-     */
-    private function stream(Context $context, OperationStream $stream): Result
-    {
-        while (($chunk = $stream->receive()) !== null) {
-            $stream->send('{"echo":' . $chunk . '}');
-        }
-
-        return Result::success();
     }
 
     /**

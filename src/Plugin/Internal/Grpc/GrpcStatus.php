@@ -31,9 +31,9 @@ final class GrpcStatus
     public const int DATA_LOSS = 15;
     public const int UNAUTHENTICATED = 16;
 
-    /** 状态码的名字，与各语言 gRPC 库的写法一致，用于日志与错误细节 */
+    /** 状态码的 PascalCase 名字（invocation.md §3）：reason 里写 `<状态名>: <说明>` 时用它 */
     private const array NAMES = [
-        'OK', 'Canceled', 'Unknown', 'InvalidArgument', 'DeadlineExceeded', 'NotFound', 'AlreadyExists',
+        'OK', 'Cancelled', 'Unknown', 'InvalidArgument', 'DeadlineExceeded', 'NotFound', 'AlreadyExists',
         'PermissionDenied', 'ResourceExhausted', 'FailedPrecondition', 'Aborted', 'OutOfRange', 'Unimplemented',
         'Internal', 'Unavailable', 'DataLoss', 'Unauthenticated',
     ];
@@ -46,7 +46,7 @@ final class GrpcStatus
     }
 
     /**
-     * 返回状态码的名字；不认识的码写成数字。
+     * 返回状态码的 PascalCase 名字；0–16 之外的码规范没有名字，写成十进制数。
      */
     public static function name(int $code): string
     {

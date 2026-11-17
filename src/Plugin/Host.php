@@ -5,10 +5,9 @@ declare(strict_types=1);
 namespace XiHan\Framework\Plugin;
 
 use Amp\DeferredCancellation;
-use XiHan\Framework\Invocation\CancellationReason;
 use XiHan\Framework\Invocation\Context;
-use XiHan\Framework\Operation\OperationErrors;
 use XiHan\Framework\Operation\Response;
+use XiHan\Framework\Plugin\Internal\CallbackFailures;
 use XiHan\Framework\Plugin\Internal\Grpc\GrpcClient;
 use XiHan\Framework\Plugin\Internal\Grpc\GrpcException;
 use XiHan\Framework\Plugin\Internal\Grpc\GrpcStatus;
@@ -23,9 +22,11 @@ use XiHan\Framework\Primitives\Unit;
 /**
  * 宿主回调服务的客户端（invocation.md §5）：以插件身份经宿主的完整管道调用操作、经宿主的消息代理发布消息。
  *
- * 每次回调带会话令牌。所需权限必须在清单 permissions 里声明并已被宿主授予，租户只能是宿主此刻交给插件处理的某个调用的
- * 租户：本端先按这两条核对，不合的不发给宿主，结果与宿主拒绝时相同（PLUGINS_DENIED_002）。gRPC 状态按 invocation.md §3
- * 的映射表转成错误。运行时在每次调用与投递的上下文里放入它，取用 Host::of($context)。
+ * 回调端点是 XIHAN_PLUGIN_HOST_ADDRESS 里第一个本 SDK 能连的项（handshake.md §4），启动时选定、之后不换；没有可用的端点时
+ * 每次回调都以 PLUGINS_UNAVAILABLE_001 + plugins.host.unavailable 失败、不发请求。发出之前按宿主的顺序在本地核对：所需权限
+ * 既在清单 permissions 里、也在 Configure 授予的权限里，回调上下文的租户是插件此刻正在处理的某个调用或投递的租户；不合的
+ * 不发给宿主，结果与宿主拒绝时相同（PLUGINS_DENIED_002）。gRPC 状态按 invocation.md §5 的表转成错误。运行时在每次调用与
+ * 投递的上下文里放入它，取用 Host::of($context)。
  */
 final class Host
 {
@@ -38,43 +39,41 @@ final class Host
     /** 上下文对象袋里的键。 */
     public const string ITEM_KEY = self::class;
 
-    /** 信封里表示租户的 CloudEvents 扩展（RFC-0009「信封」） */
-    private const string TENANT_EXTENSION = 'xihantenant';
-
     private const string INVOKE_PATH = '/xihan.plugin.v1.Host/Invoke';
 
     private const string PUBLISH_PATH = '/xihan.plugin.v1.Host/Publish';
 
     private readonly ?GrpcClient $client;
 
-    /** @var list<string>|null 宿主在 Configure 里授予的权限；Configure 之前为 null */
-    private ?array $granted = null;
+    /** @var list<string> 宿主在 Configure 里授予的权限；Configure 之前什么都没有授予 */
+    private array $granted = [];
 
     /**
      * 由运行时创建。
      *
+     * @param Endpoint|null $endpoint 选定的回调端点；没有可用的端点时为 null
      * @param list<string> $declared 清单 permissions
      *
      * @internal
      */
     public function __construct(
-        private readonly Endpoint $endpoint,
+        private readonly ?Endpoint $endpoint,
         string $session,
         private readonly string $pluginId,
         private readonly array $declared,
         private readonly TenantScope $tenants,
     ) {
-        $uri = $endpoint->socketUri();
+        $uri = $endpoint?->socketUri();
         $this->client = $uri === null ? null : new GrpcClient(
             $uri,
             'localhost',
-            ['xihan-plugin-session' => $session],
+            [Runtime::SESSION_METADATA => $session],
             FrameworkInfo::SDK_NAME . '/' . FrameworkInfo::SDK_VERSION,
         );
     }
 
     /**
-     * 取运行时放在上下文里的宿主客户端；宿主没有给回调端点时为 null。
+     * 取运行时放在上下文里的宿主客户端；上下文不是运行时交给处理器的时为 null。
      */
     public static function of(Context $context): ?self
     {
@@ -84,9 +83,9 @@ final class Host
     }
 
     /**
-     * 返回宿主的回调端点。
+     * 返回选定的回调端点；没有可用的端点时为 null。
      */
-    public function endpoint(): Endpoint
+    public function endpoint(): ?Endpoint
     {
         return $this->endpoint;
     }
@@ -94,15 +93,15 @@ final class Host
     /**
      * 以插件身份经宿主的完整管道调用一个操作（需要权限 capability:kernel.pipeline）。
      *
-     * 上下文的截止时间、追踪与已登记的 Baggage 随调用传给宿主，调用方的取消即取消回调。
+     * 上下文的截止时间（gRPC 截止时间与它相同）、追踪与已登记的 Baggage 随调用传给宿主，调用方的取消即取消回调。
      *
      * @param string $payload 请求的 JSON；空等价于 `{}`
      */
     public function invoke(Context $context, string $operation, string $payload = ''): Response
     {
-        $denied = $this->deny($context, self::PERMISSION_INVOKE);
-        if ($denied !== null) {
-            return new Response(Result::fail($denied), null);
+        $refused = $this->refuse($context, self::PERMISSION_INVOKE);
+        if ($refused !== null) {
+            return new Response(Result::fail($refused), null);
         }
         $request = (new V1\InvokeRequest())
             ->setOperation($operation)
@@ -110,15 +109,20 @@ final class Host
             ->setMetadata(Protocol::metadata($context));
         try {
             $response = new V1\InvokeResponse();
-            $response->mergeFromString($this->call(self::INVOKE_PATH, $request->serializeToString(), $context));
+            $this->decode($response, $this->call(self::INVOKE_PATH, $request->serializeToString(), $context));
         } catch (GrpcException $exception) {
-            $error = $this->fromGrpc($exception, $context, self::PERMISSION_INVOKE, $operation);
+            $error = CallbackFailures::map(
+                CallbackFailures::INVOKE,
+                $exception->status,
+                $exception->detail,
+                $context->cancellation()->isRequested(),
+                $this->pluginId,
+                $operation,
+            );
 
             return new Response(Result::fail($error), null);
-        } catch (\Exception $exception) {
-            return new Response(Result::fail($this->invalidResponse($exception)), null);
         }
-        $outcome = Protocol::fromStatus($response->getStatus(), $this->pluginId);
+        $outcome = Protocol::fromStatus($response->getStatus(), $this->pluginId, $operation);
 
         return new Response($outcome, $outcome->isOk() ? $response->getPayload() : null);
     }
@@ -126,7 +130,8 @@ final class Host
     /**
      * 经宿主的消息代理发布消息（需要权限 capability:messaging.queue），结果与信封一一对应；空列表不发给宿主。
      *
-     * 信封的 xihantenant 扩展逐项核对，越界的那一项为 PLUGINS_DENIED_002，其余照常发布。
+     * 宿主以回调上下文为调用上下文发布，从上下文补齐信封缺的扩展属性（租户、主体、关联 ID、区域、追踪，RFC-0009）。
+     * 本地的两项核对与 RPC 的失败都是整批的结果；信封的 xihantenant 扩展不在本地核对，由宿主逐项判定。
      *
      * @param list<Envelope> $envelopes
      *
@@ -134,35 +139,48 @@ final class Host
      */
     public function publish(Context $context, array $envelopes): array
     {
-        if ($envelopes === []) {
+        $count = count($envelopes);
+        if ($count === 0) {
             return [];
         }
-        $denied = $this->deny($context, self::PERMISSION_PUBLISH);
-        if ($denied !== null) {
-            return array_fill(0, count($envelopes), Result::fail($denied));
+        $refused = $this->refuse($context, self::PERMISSION_PUBLISH);
+        if ($refused !== null) {
+            return array_fill(0, $count, Result::fail($refused));
         }
-        $results = [];
-        $sent = [];
-        foreach ($envelopes as $index => $envelope) {
-            $tenant = $envelope->extensions[self::TENANT_EXTENSION] ?? null;
-            if ($tenant !== null && !$this->tenants->admits($tenant)) {
-                $results[$index] = Result::fail(PluginErrors::tenantDenied($this->pluginId, $tenant));
-            } else {
-                $sent[$index] = Protocol::toProtoEnvelope($envelope);
-            }
-        }
-        if ($sent !== []) {
-            $request = (new V1\PublishRequest())
-                ->setEnvelopes(array_values($sent))
-                ->setMetadata(Protocol::metadata($context));
-            $outcomes = $this->publishBatch($request, $context, count($sent));
-            foreach (array_keys($sent) as $position => $index) {
-                $results[$index] = $outcomes[$position];
-            }
-        }
-        ksort($results);
+        $request = (new V1\PublishRequest())
+            ->setEnvelopes(array_map(Protocol::toProtoEnvelope(...), $envelopes))
+            ->setMetadata(Protocol::metadata($context));
+        try {
+            $response = new V1\PublishResponse();
+            $this->decode($response, $this->call(self::PUBLISH_PATH, $request->serializeToString(), $context));
+        } catch (GrpcException $exception) {
+            $error = CallbackFailures::map(
+                CallbackFailures::PUBLISH,
+                $exception->status,
+                $exception->detail,
+                $context->cancellation()->isRequested(),
+                $this->pluginId,
+                '',
+            );
 
-        return array_values($results);
+            return array_fill(0, $count, Result::fail($error));
+        }
+        $statuses = iterator_to_array($response->getResults(), false);
+        if (count($statuses) !== $count) {
+            $error = PluginErrors::failed($this->pluginId, 'publish', sprintf(
+                'the host returned %d results for %d envelopes',
+                count($statuses),
+                $count,
+            ));
+
+            return array_fill(0, $count, Result::fail($error));
+        }
+        $outcomes = [];
+        foreach ($statuses as $status) {
+            $outcomes[] = Protocol::fromStatus($status, $this->pluginId, 'publish');
+        }
+
+        return $outcomes;
     }
 
     /**
@@ -188,56 +206,38 @@ final class Host
     }
 
     /**
-     * 发布一批信封；整批失败时每一项都是同一个错误。
-     *
-     * @return list<Result<Unit>>
+     * 发出之前的核对，依次是：有可用的回调端点（handshake.md §4，每次回调都以它失败）、权限、上下文的租户（与宿主的顺序
+     * 相同）；都合时为 null。
      */
-    private function publishBatch(V1\PublishRequest $request, Context $context, int $count): array
+    private function refuse(Context $context, string $permission): ?Error
     {
-        try {
-            $response = new V1\PublishResponse();
-            $response->mergeFromString($this->call(self::PUBLISH_PATH, $request->serializeToString(), $context));
-        } catch (GrpcException $exception) {
-            $error = $this->fromGrpc($exception, $context, self::PERMISSION_PUBLISH, null);
-
-            return array_fill(0, $count, Result::fail($error));
-        } catch (\Exception $exception) {
-            return array_fill(0, $count, Result::fail($this->invalidResponse($exception)));
+        if ($this->client === null) {
+            return PluginErrors::hostUnavailable($this->pluginId, PluginErrors::REASON_NO_ENDPOINT);
         }
-        $outcomes = [];
-        $statuses = iterator_to_array($response->getResults(), false);
-        for ($index = 0; $index < $count; $index++) {
-            $status = $statuses[$index] ?? null;
-            $outcomes[] = $status instanceof V1\Status
-                ? Protocol::fromStatus($status, $this->pluginId)
-                : Result::fail(PluginErrors::failed(
-                    $this->pluginId,
-                    'callback',
-                    'The host returned fewer results than envelopes.',
-                ));
+        if (!in_array($permission, $this->declared, true) || !in_array($permission, $this->granted, true)) {
+            return PluginErrors::callbackDenied($this->pluginId, $permission);
+        }
+        $tenant = $context->tenant();
+        if ($tenant !== null && !$this->tenants->admits($tenant)) {
+            return PluginErrors::tenantDenied($this->pluginId, $tenant);
         }
 
-        return $outcomes;
+        return null;
     }
 
     /**
-     * 发出一元回调：截止时间取上下文的剩余时间，上下文的取消令牌触发即取消回调。
+     * 发出一元回调：gRPC 截止时间取上下文的剩余时间，上下文的取消令牌触发即取消回调。
      *
      * @throws GrpcException
      */
     private function call(string $path, string $request, Context $context): string
     {
-        if ($this->client === null) {
-            throw new GrpcException(
-                GrpcStatus::UNAVAILABLE,
-                sprintf("The PHP plugin runtime cannot connect to the endpoint '%s'.", $this->endpoint),
-            );
-        }
+        $client = $this->client ?? throw new GrpcException(GrpcStatus::UNAVAILABLE, PluginErrors::REASON_NO_ENDPOINT);
         $cancellation = new DeferredCancellation();
         // 令牌已经取消时 subscribe 立即回调，回调随即以取消结束、不发给宿主
         $subscription = $context->cancellation()->subscribe(static fn () => $cancellation->cancel());
         try {
-            return $this->client->unary(
+            return $client->unary(
                 $path,
                 $request,
                 [],
@@ -250,58 +250,21 @@ final class Host
     }
 
     /**
-     * 本端先核对的两条：权限已声明并已授予，上下文的租户是在途调用的租户。
+     * 解码宿主的应答；解不开时按 Internal 处理（invocation.md §5 的「其他」）。
+     *
+     * @throws GrpcException
      */
-    private function deny(Context $context, string $permission): ?Error
+    private function decode(V1\InvokeResponse|V1\PublishResponse $message, string $bytes): void
     {
-        $granted = $this->granted === null || in_array($permission, $this->granted, true);
-        if (!$granted || !in_array($permission, $this->declared, true)) {
-            return PluginErrors::callbackDenied($this->pluginId, $permission);
+        try {
+            $message->mergeFromString($bytes);
+        } catch (\Exception $exception) {
+            throw new GrpcException(
+                GrpcStatus::INTERNAL,
+                'The host sent a response that cannot be decoded.',
+                [],
+                $exception,
+            );
         }
-        $tenant = $context->tenant();
-        if ($tenant !== null && !$this->tenants->admits($tenant)) {
-            return PluginErrors::tenantDenied($this->pluginId, $tenant);
-        }
-
-        return null;
-    }
-
-    /**
-     * 把回调的 gRPC 状态转成错误，按 invocation.md §3 的映射表；取消时按调用方的令牌归因。
-     */
-    private function fromGrpc(GrpcException $exception, Context $context, string $permission, ?string $operation): Error
-    {
-        return match ($exception->status) {
-            GrpcStatus::DEADLINE_EXCEEDED => CancellationReason::DeadlineExceeded->toError(),
-            GrpcStatus::CANCELLED => $context->cancellation()->reason()?->toError()
-                ?? PluginErrors::failed($this->pluginId, 'callback', $exception->detail, PluginErrors::UNAVAILABLE),
-            GrpcStatus::UNAVAILABLE => PluginErrors::failed(
-                $this->pluginId,
-                'callback',
-                $exception->detail,
-                PluginErrors::UNAVAILABLE,
-            ),
-            GrpcStatus::UNAUTHENTICATED => PluginErrors::sessionInvalid(),
-            GrpcStatus::PERMISSION_DENIED => PluginErrors::callbackDenied($this->pluginId, $permission),
-            GrpcStatus::UNIMPLEMENTED => $operation === null
-                ? PluginErrors::failed($this->pluginId, 'callback', $exception->getMessage())
-                : OperationErrors::notFound($operation),
-            GrpcStatus::INVALID_ARGUMENT => $operation === null
-                ? PluginErrors::failed($this->pluginId, 'callback', $exception->getMessage())
-                : OperationErrors::invalidPayload($operation, '$'),
-            default => PluginErrors::failed($this->pluginId, 'callback', $exception->getMessage()),
-        };
-    }
-
-    /**
-     * 宿主的应答解不开。
-     */
-    private function invalidResponse(\Exception $exception): Error
-    {
-        return PluginErrors::failed(
-            $this->pluginId,
-            'callback',
-            sprintf('The host sent a response that cannot be decoded (%s).', $exception::class),
-        );
     }
 }

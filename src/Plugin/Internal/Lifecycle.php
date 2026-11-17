@@ -10,7 +10,7 @@ use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\LifecycleState;
 
 /**
- * 插件的生命周期状态机（lifecycle.md §1）：迁移按原语层的合法迁移表核对，每次变化唤醒等着的健康推送。
+ * 插件的生命周期状态机（lifecycle.md §1、§7）：迁移按原语层的合法迁移表核对，每次变化唤醒等着的健康推送。
  *
  * 状态只在事件循环里改写，Fiber 只在挂起点切换，读写之间没有挂起点，不需要锁。
  *
@@ -74,7 +74,7 @@ final class Lifecycle
     }
 
     /**
-     * 返回下一次变化时完成的 Future。
+     * 返回下一次变化时完成的 Future：状态或原因变了，或有人以 signal() 报告健康项变了。
      *
      * @return Future<null>
      */
@@ -83,6 +83,14 @@ final class Lifecycle
         $this->next ??= new DeferredFuture();
 
         return $this->next->getFuture();
+    }
+
+    /**
+     * 唤醒等着变化的健康推送：健康回调报的健康项或原因变了，状态没变（lifecycle.md §7.4）。
+     */
+    public function signal(): void
+    {
+        $this->notify();
     }
 
     private function notify(): void

@@ -31,7 +31,7 @@ final class GrpcClient
     /**
      * @param string $uri 端点：`unix:///path` 或 `tcp://127.0.0.1:port`
      * @param string $authority 请求的 `:authority`
-     * @param array<string, string> $metadata 每次调用都带的元数据
+     * @param array<string, string|list<string>> $metadata 每次调用都带的元数据；列表即同名的多个值
      * @param string $userAgent 请求的 user-agent
      */
     public function __construct(
@@ -46,7 +46,7 @@ final class GrpcClient
      * 发起一次调用：写出请求头部，返回调用；消息由调用方写读。
      *
      * @param string $path 方法路径，如 `/xihan.plugin.v1.Host/Invoke`
-     * @param array<string, string> $metadata 这次调用另带的元数据
+     * @param array<string, string|list<string>> $metadata 这次调用另带的元数据
      * @param float|null $timeout 截止时间（秒）；写进 grpc-timeout，到了即以 DEADLINE_EXCEEDED 结束
      *
      * @throws GrpcException 连不上（UNAVAILABLE）或截止时间已到
@@ -75,8 +75,11 @@ final class GrpcClient
         if ($timeout !== null) {
             $headers[] = ['grpc-timeout', GrpcStatus::formatTimeout($timeout)];
         }
-        foreach ([...$this->metadata, ...$metadata] as $name => $value) {
-            $headers[] = [strtolower($name), $value];
+        foreach ([...$this->metadata, ...$metadata] as $name => $values) {
+            // 同名的多个值各写一个头部字段（gRPC 的元数据可以有多个值）
+            foreach ((array) $values as $value) {
+                $headers[] = [strtolower($name), $value];
+            }
         }
         $connection->sendHeaders($stream, $headers, false);
 
@@ -86,7 +89,7 @@ final class GrpcClient
     /**
      * 一元调用：写一条请求、读一条响应。
      *
-     * @param array<string, string> $metadata
+     * @param array<string, string|list<string>> $metadata
      *
      * @throws GrpcException 对方以非 OK 的状态结束、连不上、截止时间已到或调用方已取消
      */

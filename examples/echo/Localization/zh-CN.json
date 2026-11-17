@@ -1,5 +1,4 @@
 {
   "echo.configuration.invalid": "配置节 XiHan:Echo 不合法：{reason}",
-  "echo.host.unavailable": "宿主没有给插件回调端点。",
   "echo.text.missing": "要回声的文本不能为空。"
 }

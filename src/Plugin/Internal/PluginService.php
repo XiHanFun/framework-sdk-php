@@ -9,6 +9,7 @@ use Amp\CancelledException;
 use Amp\CompositeCancellation;
 use Amp\DeferredCancellation;
 use Amp\DeferredFuture;
+use Amp\NullCancellation;
 use Amp\TimeoutCancellation;
 use Google\Protobuf\Internal\Message;
 use Revolt\EventLoop;
@@ -24,6 +25,7 @@ use XiHan\Framework\Operation\OperationErrors;
 use XiHan\Framework\Operation\Request;
 use XiHan\Framework\Operation\Response;
 use XiHan\Framework\Plugin\Configuration;
+use XiHan\Framework\Plugin\Envelope;
 use XiHan\Framework\Plugin\Health;
 use XiHan\Framework\Plugin\HealthItem;
 use XiHan\Framework\Plugin\Host;
@@ -31,12 +33,10 @@ use XiHan\Framework\Plugin\Internal\Grpc\GrpcException;
 use XiHan\Framework\Plugin\Internal\Grpc\GrpcStatus;
 use XiHan\Framework\Plugin\Internal\Grpc\ServerCall;
 use XiHan\Framework\Plugin\Logger;
-use XiHan\Framework\Plugin\OperationStream;
 use XiHan\Framework\Plugin\Options;
 use XiHan\Framework\Plugin\PluginErrors;
 use XiHan\Framework\Plugin\Protocol\V1;
 use XiHan\Framework\Plugin\ResolvedBinding;
-use XiHan\Framework\Plugin\StreamingOperation;
 use XiHan\Framework\Plugin\Subscription;
 use XiHan\Framework\Plugin\SubscriptionMode;
 use XiHan\Framework\Primitives\Error;
@@ -49,10 +49,12 @@ use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Unit;
 
 /**
- * xihan.plugin.v1.Plugin 服务的实现：握手、配置、启停、健康、调用与事件投递（handshake.md、lifecycle.md、invocation.md）。
+ * xihan.plugin.v1.Plugin 服务的实现：握手、配置、启停、健康、调用与事件投递（handshake.md §3，lifecycle.md §7，
+ * invocation.md §1–§4）。
  *
- * 会话令牌由服务端的守卫在进入这里之前核对。业务失败写进 Status.error，gRPC 状态只用于协议层的失败：没有共同的协议
- * 版本、顺序不对的生命周期调用（FAILED_PRECONDITION）、未声明的操作（UNIMPLEMENTED）、帧序不对（INVALID_ARGUMENT）。
+ * 会话令牌由服务端的守卫在进入这里之前核对，先于一切（含次序核对与流式调用读第一帧）。业务失败写进 Status.error，
+ * gRPC 状态只用于协议层的失败：没有共同的协议版本与不在次序表里的调用（FAILED_PRECONDITION）、未声明的操作与流式调用
+ * （UNIMPLEMENTED）、帧序或投递不合法（INVALID_ARGUMENT）。
  *
  * @internal 不属于公开 API，随时可能改变。
  */
@@ -61,46 +63,65 @@ final class PluginService
     /** 方法路径的前缀 */
     public const string PREFIX = '/xihan.plugin.v1.Plugin/';
 
-    /** WatchHealth 在两次状态变化之间核对健康回调的间隔（秒）：回调报的变化不经状态机通知 */
-    private const float HEALTH_POLL = 1.0;
+    /** Stop 的 grace_seconds 为 0 时等在途调用的秒数（lifecycle.md §7.5） */
+    public const float DEFAULT_GRACE = 5.0;
 
-    /** @var array<string, StreamingOperation> */
-    private readonly array $streams;
+    /** WatchHealth 在可服务期间重新求健康回调的间隔（秒）：宿主 HealthInterval 的缺省值（lifecycle.md §7.4） */
+    private const float HEALTH_INTERVAL = 10.0;
+
+    /** 可服务的状态（lifecycle.md §7.3） */
+    private const array SERVING = [LifecycleState::Ready, LifecycleState::Degraded];
+
+    /** 健康回调报了会改变状态的三种状态（lifecycle.md §7.4） */
+    private const array ADOPTED = [LifecycleState::Ready, LifecycleState::Degraded, LifecycleState::Failed];
 
     /** @var array<string, true> 已经告警过的未声明的健康项 */
     private array $undeclaredItems = [];
 
-    /** 在途的调用与投递数 */
-    private int $inFlight = 0;
+    /** @var array<int, CancellationSource> 在途的调用与投递：收尾时触发它们的取消信号 */
+    private array $inFlight = [];
 
-    /** 停止回调是否已经执行过 */
-    private bool $stopHookRan = false;
+    /** 下一个在途调用的编号 */
+    private int $nextCall = 0;
 
     /** @var DeferredFuture<null>|null 停止时等在途调用结束 */
     private ?DeferredFuture $idle = null;
 
-    private readonly DeferredCancellation $draining;
+    /** 启动回调是否成功过：决定停止时调不调停止回调（lifecycle.md §7.5） */
+    private bool $started = false;
+
+    /** @var DeferredFuture<Result<Unit>>|null 停止回调：第一次调用时创建，回调返回时带上结果 */
+    private ?DeferredFuture $stopHook = null;
+
+    /** @var list<HealthItem> 最近一次健康回调报的、已声明的健康项 */
+    private array $items = [];
+
+    /** 最近一次健康回调报的原因 */
+    private ?Error $reported = null;
+
+    /** 进入 Draining 时的健康应答：WatchHealth 结束之前一定推过它 */
+    private ?string $drainingHealth = null;
+
+    /** 应答 Stop 或收尾之后触发：WatchHealth 结束流 */
+    private readonly DeferredCancellation $finished;
 
     /**
-     * @param \Closure(float): void $shutdown 在 Stop 应答之后优雅停止服务端并让进程退出（宽限秒数）
+     * @param string $manifestText 清单原文（已去掉开头的 BOM），握手原样发出
+     * @param \Closure(float): void $shutdown 在 Stop 应答之后停止服务端并让进程退出（等在途流的秒数）
      */
     public function __construct(
         private readonly Options $options,
         private readonly Manifest $manifest,
+        private readonly string $manifestText,
         private readonly Invoker $invoker,
         private readonly Lifecycle $lifecycle,
         private readonly Logger $logger,
         private readonly TenantScope $tenants,
-        private readonly ?Host $host,
+        private readonly Host $host,
         private readonly Clock $clock,
         private readonly \Closure $shutdown,
     ) {
-        $streams = [];
-        foreach ($options->streams as $operation) {
-            $streams[$operation->contract->id] = $operation;
-        }
-        $this->streams = $streams;
-        $this->draining = new DeferredCancellation();
+        $this->finished = new DeferredCancellation();
     }
 
     /**
@@ -124,61 +145,54 @@ final class PluginService
     }
 
     /**
-     * 进入停止：之后的调用与投递以 PLUGINS_UNAVAILABLE_001 失败，健康推送发完最后一条后结束。
+     * stdin 关闭或 SIGTERM 时收尾（lifecycle.md §7.7）：可服务的进入 Draining，立即触发全部在途调用的取消信号并等它们结束；
+     * 启动回调成功过的调一次停止回调（原因 shutdown，正在进行的 Stop 已经调了就等它）。一共至多 $limit 秒，时限由调用方兜底。
      */
-    public function beginDraining(): void
+    public function drain(float $limit): void
     {
-        $this->lifecycle->transition(LifecycleState::Draining);
-        if (!$this->draining->isCancelled()) {
-            $this->draining->cancel();
+        $start = hrtime(true);
+        if ($this->lifecycle->is(...self::SERVING)) {
+            $this->beginDraining();
+        }
+        $this->cancelInFlight();
+        $this->awaitIdle($limit);
+        if ($this->started) {
+            $remaining = max(0.0, $limit - (hrtime(true) - $start) / 1e9);
+            $this->runStopHook('shutdown', $remaining, new TimeoutCancellation($remaining));
         }
     }
 
     /**
-     * 等在途的调用与投递结束，至多 $grace 秒。
+     * 结束全部 WatchHealth 流：应答 Stop 之后与收尾时调用。
      */
-    public function awaitIdle(float $grace): void
+    public function finish(): void
     {
-        if ($this->inFlight === 0) {
-            return;
-        }
-        $this->idle ??= new DeferredFuture();
-        try {
-            $this->idle->getFuture()->await(new TimeoutCancellation(max(0.0, $grace)));
-        } catch (CancelledException) {
-            $this->logger->warning('In-flight calls did not finish within the grace period.', [
-                'inFlight' => $this->inFlight,
-            ]);
+        if (!$this->finished->isCancelled()) {
+            $this->finished->cancel();
         }
     }
 
     /**
-     * 执行停止回调，至多一次：Stop 与 stdin 关闭先后到达时，后到的直接返回成功。
+     * 判断 WatchHealth 是否该结束：Stop 已经应答或已经收尾。
      *
-     * @return Result<Unit>
+     * @phpstan-impure
      */
-    public function runStopHook(string $reason, float $grace): Result
+    private function isFinished(): bool
     {
-        $hook = $this->options->hooks->stop;
-        if ($hook === null || $this->stopHookRan) {
-            return Result::success();
-        }
-        $this->stopHookRan = true;
-
-        return $this->runHook('stop', static fn (): mixed => $hook($reason, $grace));
+        return $this->finished->isCancelled();
     }
 
     /**
-     * 握手：协商版本、报告原语层版本，交出清单、操作与订阅声明、消息目录（handshake.md §3）。
+     * 握手：协商版本、报告原语层版本，交出清单、操作与订阅声明、作者的消息目录（handshake.md §3）；只在 Declared 接受。
      *
-     * @throws GrpcException 没有共同的协议版本，或握手已经完成（FAILED_PRECONDITION）
+     * @throws GrpcException 握手已经完成或没有共同的协议版本（FAILED_PRECONDITION）
      */
     private function handshake(ServerCall $call): void
     {
         $request = new V1\HandshakeRequest();
         $this->read($call, $request);
-        if (!$this->lifecycle->is(LifecycleState::Declared, LifecycleState::Failed)) {
-            throw new GrpcException(GrpcStatus::FAILED_PRECONDITION, 'The plugin has already completed its handshake.');
+        if (!$this->lifecycle->is(LifecycleState::Declared)) {
+            throw self::outOfOrder('Handshake is accepted only once, before anything else.');
         }
         $offered = iterator_to_array($request->getProtocolVersions(), false);
         $selected = Versions::negotiate($offered);
@@ -192,17 +206,18 @@ final class PluginService
         $response = (new V1\HandshakeResponse())
             ->setProtocolVersion($selected)
             ->setPrimitives($this->manifest->primitives)
-            ->setManifest($this->options->manifest)
+            ->setManifest($this->manifestText)
             ->setSdk((new V1\SdkInfo())
                 ->setName(FrameworkInfo::SDK_NAME)
                 ->setVersion(FrameworkInfo::SDK_VERSION)
                 ->setLanguage('php'))
             ->setOperations($this->declarations())
+            // 按声明的顺序写订阅，方式总是写出 competing 或 broadcast（handshake.md §3 第 5 条）
             ->setSubscriptions(array_map(
                 static fn (Subscription $subscription): V1\Subscription => (new V1\Subscription())
                     ->setTopic($subscription->topic)
                     ->setMessageType($subscription->messageType)
-                    ->setMode($subscription->mode->value ?? ''),
+                    ->setMode($subscription->effectiveMode()->value),
                 $this->options->subscriptions,
             ))
             ->setCatalogs($this->catalogs());
@@ -216,27 +231,30 @@ final class PluginService
     }
 
     /**
-     * 配置：下发配置节、授予的权限、绑定与工作目录（lifecycle.md §2）；失败即 Failed。
+     * 配置（lifecycle.md §7.2）：只在 Resolved 接受；配置节不是 JSON 对象时不调配置回调，失败即 Failed。
      *
-     * @throws GrpcException 还没有握手（FAILED_PRECONDITION）
+     * @throws GrpcException 次序不对（FAILED_PRECONDITION）
      */
     private function configure(ServerCall $call): void
     {
         $request = new V1\ConfigureRequest();
         $this->read($call, $request);
         if (!$this->lifecycle->is(LifecycleState::Resolved)) {
-            throw new GrpcException(GrpcStatus::FAILED_PRECONDITION, 'Configure requires a completed handshake.');
+            throw self::outOfOrder('Configure is accepted only once, after the handshake.');
         }
-        $permissions = iterator_to_array($request->getGrantedPermissions(), false);
-        $bindings = [];
-        foreach ($request->getBindings() as $binding) {
-            $bindings[] = new ResolvedBinding($binding->getName(), $binding->getType(), $binding->getValue());
-        }
-        $this->host?->grant($permissions);
         $section = $this->section($request->getConfiguration());
-        if ($section instanceof Error) {
-            $outcome = Result::fail($section);
+        if ($section === null) {
+            $outcome = Result::fail(
+                PluginErrors::failed($this->manifest->id, 'configure', PluginErrors::REASON_NOT_AN_OBJECT),
+            );
         } else {
+            $permissions = iterator_to_array($request->getGrantedPermissions(), false);
+            $bindings = [];
+            foreach ($request->getBindings() as $binding) {
+                $bindings[] = new ResolvedBinding($binding->getName(), $binding->getType(), $binding->getValue());
+            }
+            // 回调前的权限核对以 granted_permissions 为准（invocation.md §5）
+            $this->host->grant(array_values(array_filter($permissions, is_string(...))));
             $configuration = new Configuration($section, $permissions, $bindings, $request->getWorkDirectory());
             $hook = $this->options->hooks->configure;
             $outcome = $hook === null
@@ -248,28 +266,29 @@ final class PluginService
     }
 
     /**
-     * 启动：成功后插件接受调用；没有健康回调时直接报 Ready（lifecycle.md §1）。
+     * 启动与就绪（lifecycle.md §7.3）：只在 Configured 接受；启动回调成功后进入 Started，有健康回调就立即求一次并按结果
+     * 进入 Ready、Degraded 或 Failed，没有就进入 Ready，然后才应答。
      *
-     * @throws GrpcException 还没有配置（FAILED_PRECONDITION）
+     * @throws GrpcException 次序不对（FAILED_PRECONDITION）
      */
     private function start(ServerCall $call): void
     {
         $this->read($call, new V1\StartRequest());
         if (!$this->lifecycle->is(LifecycleState::Configured)) {
-            throw new GrpcException(GrpcStatus::FAILED_PRECONDITION, 'Start requires a successful Configure.');
+            throw self::outOfOrder('Start is accepted only once, after a successful Configure.');
         }
         $hook = $this->options->hooks->start;
         $outcome = $hook === null ? Result::success() : $this->runHook('start', static fn (): mixed => $hook());
         $this->settle($outcome, LifecycleState::Started, 'start');
         if ($outcome->isOk()) {
+            $this->started = true;
             if ($this->options->hooks->health === null) {
                 $this->lifecycle->transition(LifecycleState::Ready);
             } else {
-                // 有健康回调时由它决定是否 Ready：Started 之后立刻核对一次
-                $this->currentHealth();
+                $this->probe($this->options->hooks->health);
             }
             $this->logger->information('Started.', [
-                'operations' => count($this->invoker->registry()) + count($this->streams),
+                'operations' => count($this->invoker->registry()),
                 'subscriptions' => count($this->options->subscriptions),
                 'state' => $this->lifecycle->state(),
             ]);
@@ -278,71 +297,105 @@ final class PluginService
     }
 
     /**
-     * 停止：进入 Draining、拒绝新调用、等在途调用（宽限内）、执行停止回调、应答，然后退出进程（lifecycle.md §5）。
+     * 停止（lifecycle.md §7.5）：Declared、Draining、Stopped 之外都接受。启动回调没成功过的不调停止回调、直接应答；
+     * 其余等在途调用到宽限期（到了触发它们的取消信号、不再等），再调停止回调、应答，然后退出进程。
+     *
+     * @throws GrpcException 次序不对（FAILED_PRECONDITION）
      */
     private function stop(ServerCall $call): void
     {
         $request = new V1\StopRequest();
         $this->read($call, $request);
-        $grace = $request->getGraceSeconds() > 0 ? (float) $request->getGraceSeconds() : $this->options->stopGrace;
-        $started = $this->clock->now();
+        if ($this->lifecycle->is(LifecycleState::Declared, LifecycleState::Draining, LifecycleState::Stopped)) {
+            throw self::outOfOrder('Stop is not accepted before the handshake or while stopping.');
+        }
+        $grace = $request->getGraceSeconds() > 0 ? (float) $request->getGraceSeconds() : self::DEFAULT_GRACE;
+        $begun = hrtime(true);
         $this->logger->information('Stopping.', ['reason' => $request->getReason(), 'grace' => $grace]);
-        $this->beginDraining();
-        $this->awaitIdle($grace);
-        $outcome = $this->runStopHook($request->getReason(), $grace);
-        $error = $outcome->error();
-        if ($error !== null) {
-            $this->logger->error('The stop hook failed.', ['code' => $error->code, 'message' => $error->message()]);
+        $outcome = Result::success();
+        if ($this->started) {
+            // 启动成功过之后进入 Failed 的不迁移状态，在途调用与停止回调照常处理
+            if ($this->lifecycle->is(LifecycleState::Started, ...self::SERVING)) {
+                $this->beginDraining();
+            }
+            if (!$this->awaitIdle($grace)) {
+                // 宽限到了：只经令牌通知仍在进行的调用（RFC-0003），不强行中止，也不再等
+                $this->cancelInFlight();
+            }
+            $remaining = max(0.0, $grace - (hrtime(true) - $begun) / 1e9);
+            $outcome = $this->runStopHook($request->getReason(), $remaining, new NullCancellation());
+            $error = $outcome->error();
+            if ($error !== null) {
+                $this->logger->error('The stop hook failed.', ['code' => $error->code, 'error' => $error->message()]);
+            }
         }
         $call->send((new V1\StopResponse())->setStatus(Protocol::toStatus($outcome))->serializeToString());
-        $remaining = max(0.0, $grace - ((float) $this->clock->now()->format('U.u') - (float) $started->format('U.u')));
+        $this->finish();
+        $remaining = max(0.0, $grace - (hrtime(true) - $begun) / 1e9);
         $shutdown = $this->shutdown;
-        // 应答写出、本次调用结束之后才停止服务端：优雅停止要等在途的流，包括这一次
+        // 应答写出、本次调用结束之后才停止服务端：服务端停止时等的在途流包括这一次
         EventLoop::defer(static function () use ($shutdown, $remaining): void {
             $shutdown($remaining);
         });
     }
 
     /**
-     * 健康探测。
+     * 健康探测（lifecycle.md §7.4）：任何状态都接受；可服务期间每次都求一次健康回调。
      */
     private function health(ServerCall $call): void
     {
         $this->read($call, new V1\HealthRequest());
-        $call->send($this->currentHealth()->serializeToString());
+        $call->send($this->evaluate()->serializeToString());
     }
 
     /**
-     * 健康推送：先发当前状态，之后状态或健康项变化时各发一条；停止时发完最后一条后结束（lifecycle.md §4）。
+     * 健康推送（lifecycle.md §7.4）：先推当前状态，之后状态、健康项或原因变化时推送；可服务期间每 10 秒重新求一次健康回调；
+     * 进入 Draining 时推一次，应答 Stop 后结束流。
      */
     private function watchHealth(ServerCall $call): void
     {
         $this->read($call, new V1\HealthRequest());
-        $last = $this->currentHealth()->serializeToString();
+        $last = $this->evaluate()->serializeToString();
         $call->send($last);
-        while (!$this->draining->isCancelled()) {
+        $drainingSent = $last === $this->drainingHealth;
+        $nextProbe = hrtime(true) + (int) (self::HEALTH_INTERVAL * 1e9);
+        while (!$this->isFinished()) {
+            $serving = $this->lifecycle->is(...self::SERVING);
+            $parts = [$call->cancellation(), $this->finished->getCancellation()];
+            if ($serving) {
+                $parts[] = new TimeoutCancellation(max(0.0, ($nextProbe - hrtime(true)) / 1e9));
+            }
             try {
-                $this->lifecycle->changed()->await(new CompositeCancellation(
-                    new TimeoutCancellation(self::HEALTH_POLL),
-                    $call->cancellation(),
-                    $this->draining->getCancellation(),
-                ));
+                $this->lifecycle->changed()->await(new CompositeCancellation(...$parts));
             } catch (CancelledException) {
-                // 到了核对间隔、宿主取消了订阅或开始停止：都重新算一次
+                // 到了重新求健康的时刻、宿主取消了订阅或流该结束了：下面分别处理
             }
             if ($call->cancellation()->isRequested()) {
                 return;
             }
-            $current = $this->currentHealth()->serializeToString();
+            if ($this->isFinished()) {
+                break;
+            }
+            $probe = $serving && hrtime(true) >= $nextProbe;
+            if ($probe) {
+                $nextProbe = hrtime(true) + (int) (self::HEALTH_INTERVAL * 1e9);
+            }
+            $current = ($probe ? $this->evaluate() : $this->snapshot())->serializeToString();
             if ($current !== $last) {
                 $call->send($current);
                 $last = $current;
+                $drainingSent = $drainingSent || $current === $this->drainingHealth;
             }
+        }
+        // 应答 Stop 与进入 Draining 之间可能没有挂起点，推送的 Fiber 来不及醒：结束之前补上那一次 Draining
+        if ($this->drainingHealth !== null && !$drainingSent) {
+            $call->send($this->drainingHealth);
         }
     }
 
     /**
-     * 调用一个一元操作：未声明的操作以 UNIMPLEMENTED 结束，未就绪返回 PLUGINS_UNAVAILABLE_001，其余经调用器与完整管道执行。
+     * 调用一个一元操作（invocation.md §1）：操作未声明 → UNIMPLEMENTED；不可服务 → PLUGINS_UNAVAILABLE_001；然后还原
+     * 上下文，经调用器与完整管道执行，payload 为空等同 `{}`。
      *
      * @throws GrpcException 操作未声明（UNIMPLEMENTED）
      */
@@ -352,11 +405,12 @@ final class PluginService
         $this->read($call, $request);
         $id = $request->getOperation();
         if ($this->invoker->registry()->find($id) === null) {
-            throw new GrpcException(GrpcStatus::UNIMPLEMENTED, isset($this->streams[$id])
-                ? sprintf("The operation '%s' is a streaming operation; call it with InvokeStream.", $id)
-                : sprintf("The operation '%s' is not provided by this plugin.", $id));
+            throw new GrpcException(
+                GrpcStatus::UNIMPLEMENTED,
+                sprintf("The operation '%s' is not provided by this plugin.", $id),
+            );
         }
-        if (!$this->serving()) {
+        if (!$this->lifecycle->is(...self::SERVING)) {
             $call->send((new V1\InvokeResponse())
                 ->setStatus(Protocol::toStatus(Result::fail($this->unavailable())))
                 ->serializeToString());
@@ -384,124 +438,84 @@ final class PluginService
     }
 
     /**
-     * 调用一个流式操作（invocation.md §1）：第一帧是 start，之后转交 chunk，调用方以 end 结束；本端发 chunk，最后发 end。
+     * 流式调用（invocation.md §1）：流式操作等 RFC-0011 的流式契约，插件不实现。读第一帧：流在第一帧之前结束或第一帧不是
+     * start 时以 INVALID_ARGUMENT 结束，是 start 时以 UNIMPLEMENTED 结束，不论操作是否声明、插件是否就绪。
      *
-     * @throws GrpcException 第一帧不是 start、start 出现在后面或流在 end 之前结束（INVALID_ARGUMENT），操作未声明（UNIMPLEMENTED）
+     * @throws GrpcException 总是
      */
     private function invokeStream(ServerCall $call): void
     {
-        $first = $this->frame($call);
-        if ($first === null || $first->getFrame() !== 'start') {
+        $bytes = $call->receive();
+        $frame = new V1\StreamFrame();
+        if ($bytes !== null) {
+            try {
+                $frame->mergeFromString($bytes);
+            } catch (\Exception $exception) {
+                throw new GrpcException(
+                    GrpcStatus::INVALID_ARGUMENT,
+                    'A stream frame cannot be decoded.',
+                    [],
+                    $exception,
+                );
+            }
+        }
+        if ($bytes === null || $frame->getFrame() !== 'start') {
             throw new GrpcException(GrpcStatus::INVALID_ARGUMENT, 'The first frame of a stream must be start.');
         }
-        $request = $first->getStart() ?? new V1\InvokeRequest();
-        $id = $request->getOperation();
-        $operation = $this->streams[$id] ?? null;
-        if ($operation === null) {
-            throw new GrpcException(
-                GrpcStatus::UNIMPLEMENTED,
-                sprintf("The streaming operation '%s' is not provided by this plugin.", $id),
-            );
-        }
-        if (!$this->serving()) {
-            $end = (new V1\StreamFrame())->setEnd(Protocol::toStatus(Result::fail($this->unavailable())));
-            $call->send($end->serializeToString());
 
-            return;
-        }
-        $violation = null;
-        $receive = function () use ($call, &$violation): string|Error|null {
-            try {
-                $frame = $this->frame($call);
-            } catch (GrpcException $exception) {
-                $violation = $exception;
-
-                return null;
-            }
-            if ($frame !== null && $frame->getFrame() === 'chunk') {
-                return $frame->getChunk();
-            }
-            if ($frame !== null && $frame->getFrame() === 'end') {
-                $status = $frame->getEnd();
-
-                // 调用方以 ok 结束是正常结束，否则是中止，原因交给处理器
-                return $status !== null && $status->getOk()
-                    ? null
-                    : Protocol::fromStatus($status, $this->manifest->id)->error();
-            }
-            // 流在 end 之前结束、start 出现在后面或帧是空的：帧序不对
-            $violation = new GrpcException(GrpcStatus::INVALID_ARGUMENT, $frame === null
-                ? 'The stream ended before an end frame.'
-                : 'A start frame may only come first.');
-
-            return null;
-        };
-        $send = static function (string $json) use ($call): void {
-            $call->send((new V1\StreamFrame())->setChunk($json)->serializeToString());
-        };
-        $handler = $operation->handler;
-        $run = function (Context $context) use ($handler, $request, $receive, $send, $id): Result {
-            try {
-                return $handler($context, new OperationStream($request->getPayload(), $receive, $send))->toUnit();
-            } catch (GrpcException $exception) {
-                // 写 chunk 时流已断开：没有人收得到结果
-                throw $exception;
-            } catch (\Throwable $exception) {
-                $this->logger->error('The streaming operation threw an exception.', [
-                    'operation' => $id,
-                    'exception' => $exception,
-                ]);
-
-                return Result::fail(OperationErrors::unhandledException($exception));
-            }
-        };
-        $outcome = $this->within($call, $request->getMetadata(), $run);
-        if ($violation instanceof GrpcException) {
-            throw $violation;
-        }
-        $call->send((new V1\StreamFrame())->setEnd(Protocol::toStatus($outcome))->serializeToString());
+        throw new GrpcException(
+            GrpcStatus::UNIMPLEMENTED,
+            'Streaming operations are not supported until RFC-0011 defines their contract.',
+        );
     }
 
     /**
-     * 投递一条消息：按（主题，方式）找订阅，再看类型（invocation.md §4）；找不到时返回错误，不改交给另一种方式的处理器。
+     * 投递一条消息（invocation.md §4）：没有信封或方式不认识 → INVALID_ARGUMENT；按（主题，方式，类型）找订阅，一个也没有
+     * → plugins.event.unsubscribed；不可服务 → PLUGINS_UNAVAILABLE_001；然后还原上下文，匹配的订阅按声明顺序依次交给各自的
+     * 处理器，第一个失败即终止并作为结果。
+     *
+     * @throws GrpcException 没有信封或方式不认识（INVALID_ARGUMENT）
      */
     private function handleEvent(ServerCall $call): void
     {
         $request = new V1\HandleEventRequest();
         $this->read($call, $request);
-        if (!$this->serving()) {
-            $call->send((new V1\HandleEventResponse())
-                ->setStatus(Protocol::toStatus(Result::fail($this->unavailable())))
-                ->serializeToString());
-
-            return;
-        }
-        $envelope = Protocol::envelope($request->getEnvelope());
+        $wire = $request->getEnvelope();
         $mode = SubscriptionMode::fromWire($request->getMode());
-        $subscription = null;
-        foreach ($this->options->subscriptions as $candidate) {
-            if ($mode !== null && $candidate->accepts($envelope, $mode)) {
-                $subscription = $candidate;
-                break;
-            }
+        if ($wire === null) {
+            throw new GrpcException(GrpcStatus::INVALID_ARGUMENT, 'A delivery must carry an envelope.');
         }
-        if ($subscription === null) {
-            $error = PluginErrors::noSubscription($envelope->topic, $envelope->type, $request->getMode());
-            $outcome = Result::fail($error);
+        if ($mode === null) {
+            throw new GrpcException(
+                GrpcStatus::INVALID_ARGUMENT,
+                sprintf("The delivery mode '%s' must be empty, competing or broadcast.", $request->getMode()),
+            );
+        }
+        $envelope = Protocol::envelope($wire);
+        $matches = array_values(array_filter(
+            $this->options->subscriptions,
+            static fn (Subscription $subscription): bool => $subscription->accepts($envelope, $mode),
+        ));
+        if ($matches === []) {
+            $outcome = Result::fail(PluginErrors::unsubscribed(
+                $this->manifest->id,
+                $envelope->topic,
+                $envelope->type,
+                $request->getMode(),
+            ));
+        } elseif (!$this->lifecycle->is(...self::SERVING)) {
+            $outcome = Result::fail($this->unavailable());
         } else {
-            $handler = $subscription->handler;
             $attempt = $request->getAttempt();
-            $run = function (Context $context) use ($handler, $envelope, $attempt): Result {
-                try {
-                    return $handler($context, $envelope, $attempt)->toUnit();
-                } catch (\Throwable $exception) {
-                    $this->logger->error('The event handler threw an exception.', [
-                        'topic' => $envelope->topic,
-                        'exception' => $exception,
-                    ]);
-
-                    return Result::fail(OperationErrors::unhandledException($exception));
+            $run = function (Context $context) use ($matches, $envelope, $attempt): Result {
+                foreach ($matches as $subscription) {
+                    $outcome = $this->deliver($subscription, $context, $envelope, $attempt);
+                    if (!$outcome->isOk()) {
+                        return $outcome;
+                    }
                 }
+
+                return Result::success();
             };
             $outcome = $this->within($call, $request->getMetadata(), $run);
         }
@@ -509,7 +523,31 @@ final class PluginService
     }
 
     /**
-     * 在一次调用的上下文里执行：上下文由元数据还原，宿主重置流即取消，截止时间到了令牌准时触发；调用期间登记租户。
+     * 把消息交给一个订阅的处理器；处理器抛出为 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception（RFC-0011 规则 5）。
+     *
+     * @return Result<Unit>
+     */
+    private function deliver(
+        Subscription $subscription,
+        Context $context,
+        Envelope $envelope,
+        int $attempt,
+    ): Result {
+        try {
+            return ($subscription->handler)($context, $envelope, $attempt)->toUnit();
+        } catch (\Throwable $exception) {
+            $this->logger->error('The event handler threw an exception.', [
+                'topic' => $envelope->topic,
+                'exception' => $exception,
+            ]);
+
+            return Result::fail(OperationErrors::unhandledException($exception));
+        }
+    }
+
+    /**
+     * 在一次调用或投递的上下文里执行：上下文由元数据还原，宿主重置流即取消，截止时间到了令牌准时触发；调用期间登记租户，
+     * 收尾时可以触发它的取消信号。
      *
      * @template T
      *
@@ -520,11 +558,11 @@ final class PluginService
     private function within(ServerCall $call, ?V1\InvocationMetadata $metadata, \Closure $run): mixed
     {
         $source = new CancellationSource();
+        $number = $this->nextCall++;
+        $this->inFlight[$number] = $source;
         $subscription = $call->cancellation()->subscribe(static fn () => $source->cancel());
         $context = Protocol::context($metadata, $call->timeout(), $source->cancellation(), $this->clock);
-        if ($this->host !== null) {
-            $context->items()->set(Host::ITEM_KEY, $this->host);
-        }
+        $context->items()->set(Host::ITEM_KEY, $this->host);
         $timer = null;
         $token = $context->cancellation();
         $remaining = $context->remainingTime($this->clock->now());
@@ -536,52 +574,137 @@ final class PluginService
         }
         $tenant = $context->tenant();
         $this->tenants->enter($tenant);
-        $this->inFlight++;
         try {
             return $run($context);
         } finally {
-            $this->inFlight--;
+            unset($this->inFlight[$number]);
             $this->tenants->leave($tenant);
             if ($timer !== null) {
                 EventLoop::cancel($timer);
             }
             $call->cancellation()->unsubscribe($subscription);
-            if ($this->inFlight === 0 && $this->idle !== null && !$this->idle->isComplete()) {
+            if ($this->inFlight === [] && $this->idle !== null && !$this->idle->isComplete()) {
                 $this->idle->complete();
             }
         }
     }
 
     /**
-     * 计算当前健康（lifecycle.md §1、§4）：运行中健康回调报的 Ready、Degraded、Failed 迁移状态，停止与失败之后以运行时的
-     * 状态为准；健康项只保留清单声明了的名字。
+     * 进入 Draining：之后的调用与投递以 PLUGINS_UNAVAILABLE_001 失败；记下这一刻的健康应答，WatchHealth 一定推到它。
      */
-    private function currentHealth(): V1\HealthResponse
+    private function beginDraining(): void
     {
-        $state = $this->lifecycle->state();
-        $hook = $this->options->hooks->health;
-        $items = [];
-        $error = null;
-        $configured = !$this->lifecycle->is(
-            LifecycleState::Declared,
-            LifecycleState::Resolved,
-            LifecycleState::Configured,
-        );
-        if ($hook !== null && $configured) {
-            $reported = $this->reportedHealth($hook);
-            $items = $this->declaredItems($reported);
-            $error = $reported->error;
-            $adopted = [LifecycleState::Ready, LifecycleState::Degraded, LifecycleState::Failed];
-            if ($this->serving() && in_array($reported->state, $adopted, true)) {
-                $this->lifecycle->transition($reported->state, $reported->error);
-            }
-            $state = $this->lifecycle->state();
+        if ($this->lifecycle->transition(LifecycleState::Draining)) {
+            $this->drainingHealth = $this->snapshot()->serializeToString();
         }
-        return Protocol::toProtoHealth($state, $items, $error ?? $this->lifecycle->error());
     }
 
     /**
-     * 调用健康回调；回调抛出或返回的不是 Health 时按 Degraded 上报，原因是 PLUGINS_UNEXPECTED_001。
+     * 等在途的调用与投递结束，至多 $timeout 秒；都结束了返回真。
+     */
+    private function awaitIdle(float $timeout): bool
+    {
+        if ($this->inFlight === []) {
+            return true;
+        }
+        $this->idle ??= new DeferredFuture();
+        try {
+            $this->idle->getFuture()->await(new TimeoutCancellation(max(0.0, $timeout)));
+
+            return true;
+        } catch (CancelledException) {
+            $this->logger->warning('In-flight calls did not finish in time; their cancellation was signaled.', [
+                'inFlight' => count($this->inFlight),
+            ]);
+
+            return false;
+        }
+    }
+
+    /**
+     * 触发全部在途调用与投递的取消信号（RFC-0003：只经令牌通知，不强行中止）。
+     */
+    private function cancelInFlight(): void
+    {
+        foreach ($this->inFlight as $source) {
+            $source->cancel();
+        }
+    }
+
+    /**
+     * 调停止回调，进程里至多一次：Stop 与收尾先后到达时，后到的等前一次的结果（至多到 $wait 取消）。
+     *
+     * @return Result<Unit>
+     */
+    private function runStopHook(string $reason, float $grace, AmpCancellation $wait): Result
+    {
+        if ($this->stopHook !== null) {
+            try {
+                return $this->stopHook->getFuture()->await($wait);
+            } catch (CancelledException) {
+                return Result::success();
+            }
+        }
+        $this->stopHook = new DeferredFuture();
+        $hook = $this->options->hooks->stop;
+        $outcome = $hook === null
+            ? Result::success()
+            : $this->runHook('stop', static fn (): mixed => $hook($reason, $grace));
+        $this->stopHook->complete($outcome);
+
+        return $outcome;
+    }
+
+    /**
+     * 可服务期间求一次健康回调，然后返回当前的健康应答。
+     */
+    private function evaluate(): V1\HealthResponse
+    {
+        $hook = $this->options->hooks->health;
+        if ($hook !== null && $this->lifecycle->is(...self::SERVING)) {
+            $this->probe($hook);
+        }
+
+        return $this->snapshot();
+    }
+
+    /**
+     * 求一次健康回调并照办（lifecycle.md §7.4）：只有 Ready、Degraded、Failed 改变状态（按合法迁移表，Failed 之后不再回来）；
+     * 未声明的健康项丢掉；回调抛出时这一次是 Degraded，原因为 plugins.process.failed（`phase` 为 health），没有健康项。
+     *
+     * @param \Closure(): Health $hook
+     */
+    private function probe(\Closure $hook): void
+    {
+        $reported = $this->reportedHealth($hook);
+        $items = $this->declaredItems($reported);
+        $changed = $items != $this->items || $reported->error != $this->reported;
+        $this->items = $items;
+        $this->reported = $reported->error;
+        if (in_array($reported->state, self::ADOPTED, true)) {
+            $this->lifecycle->transition($reported->state, $reported->error);
+        }
+        if ($changed) {
+            $this->lifecycle->signal();
+        }
+    }
+
+    /**
+     * 当前的健康应答，不调健康回调：可服务期间带最近一次报的健康项与原因；其余状态照实报状态（Start 之前是本地状态），
+     * 没有健康项，原因是进入该状态的原因。
+     */
+    private function snapshot(): V1\HealthResponse
+    {
+        $state = $this->lifecycle->state();
+        if ($this->lifecycle->is(...self::SERVING)) {
+            return Protocol::toProtoHealth($state, $this->items, $this->reported);
+        }
+
+        return Protocol::toProtoHealth($state, [], $this->lifecycle->error());
+    }
+
+    /**
+     * 调用健康回调；抛出（返回的不是 Health 按抛出 TypeError）时为 Degraded，原因不带异常的消息（lifecycle.md §7.6）。
      *
      * @param \Closure(): mixed $hook 回调；运行期不一定返回 Health
      */
@@ -592,17 +715,20 @@ final class PluginService
             if ($reported instanceof Health) {
                 return $reported;
             }
-            $reason = 'The health hook did not return a Health.';
+            $type = 'TypeError';
+            $this->logger->error('The health hook did not return a Health.', [
+                'returned' => get_debug_type($reported),
+            ]);
         } catch (\Throwable $exception) {
             $this->logger->error('The health hook threw an exception.', ['exception' => $exception]);
-            $reason = sprintf('The health hook threw %s.', $exception::class);
+            $type = self::typeName($exception);
         }
 
-        return new Health(LifecycleState::Degraded, [], PluginErrors::failed($this->manifest->id, 'health', $reason));
+        return new Health(LifecycleState::Degraded, [], PluginErrors::failed($this->manifest->id, 'health', $type));
     }
 
     /**
-     * 只保留清单 contributes.health 声明了的健康项；没声明的每个名字告警一次。
+     * 只保留清单 contributes.health 声明了的健康项；没声明的每个名字在进程里只告警一次。
      *
      * @return list<HealthItem>
      */
@@ -625,7 +751,7 @@ final class PluginService
     }
 
     /**
-     * 握手的操作声明：一元操作在前（按 ID 的字节序），流式操作在后。
+     * 握手的操作声明：只有一元操作（handshake.md §3 第 4 条），按 ID 的字节序。
      *
      * @return list<V1\OperationDeclaration>
      */
@@ -637,15 +763,6 @@ final class PluginService
                 $descriptor->contract,
                 $descriptor->schema?->request,
                 $descriptor->schema?->response,
-                false,
-            );
-        }
-        foreach ($this->streams as $operation) {
-            $declarations[] = self::declaration(
-                $operation->contract,
-                $operation->schema?->request,
-                $operation->schema?->response,
-                true,
             );
         }
 
@@ -656,7 +773,6 @@ final class PluginService
         Contract $contract,
         ?string $requestSchema,
         ?string $responseSchema,
-        bool $streaming,
     ): V1\OperationDeclaration {
         return (new V1\OperationDeclaration())
             ->setId($contract->id)
@@ -666,11 +782,12 @@ final class PluginService
             ->setPolicy($contract->policy ?? '')
             ->setRequestSchema($requestSchema ?? '')
             ->setResponseSchema($responseSchema ?? '')
-            ->setStreaming($streaming);
+            ->setStreaming(false);
     }
 
     /**
-     * 握手的消息目录：区域按名字排序。
+     * 握手的消息目录：只有作者自己的目录，区域按名字排序；运行时自己的消息键由宿主提供，不随握手发送
+     * （handshake.md §3 第 6 条）。
      *
      * @return list<V1\MessageCatalog>
      */
@@ -689,9 +806,9 @@ final class PluginService
     }
 
     /**
-     * 读出配置节：空即 `{}`，必须是 JSON 对象。
+     * 读出配置节（lifecycle.md §7.2）：空等同 `{}`；通不过共同 JSON 读取检查或不是对象时为 null。
      */
-    private function section(string $text): JsonObject|Error
+    private function section(string $text): ?JsonObject
     {
         if ($text === '') {
             return JsonObject::of();
@@ -699,12 +816,10 @@ final class PluginService
         try {
             $section = Wire::decode($text, 'configuration');
         } catch (InvalidArgumentException) {
-            $section = null;
+            return null;
         }
 
-        return $section instanceof JsonObject
-            ? $section
-            : PluginErrors::failed($this->manifest->id, 'configure', 'The configuration section is not a JSON object.');
+        return $section instanceof JsonObject ? $section : null;
     }
 
     /**
@@ -723,12 +838,13 @@ final class PluginService
         $this->lifecycle->transition(LifecycleState::Failed, $error);
         $this->logger->error(sprintf('The %s step failed.', $phase), [
             'code' => $error->code,
-            'message' => $error->message(),
+            'error' => $error->message(),
         ]);
     }
 
     /**
-     * 执行生命周期回调：抛出的异常记进日志，交给宿主的是 PLUGINS_UNEXPECTED_001，不带异常的消息。
+     * 执行生命周期回调：抛出的异常连同消息记进日志，交给宿主的是 PLUGINS_UNEXPECTED_001，`reason` 只是异常的简单类名
+     * （lifecycle.md §7.6）；返回的不是 Result 按抛出 TypeError 处理。
      *
      * @param \Closure(): mixed $hook
      *
@@ -741,13 +857,32 @@ final class PluginService
             if ($result instanceof Result) {
                 return $result->toUnit();
             }
-            $reason = sprintf('The %s hook did not return a Result.', $phase);
+            $type = 'TypeError';
+            $this->logger->error(sprintf('The %s hook did not return a Result.', $phase), [
+                'returned' => get_debug_type($result),
+            ]);
         } catch (\Throwable $exception) {
             $this->logger->error(sprintf('The %s hook threw an exception.', $phase), ['exception' => $exception]);
-            $reason = sprintf('The %s hook threw %s.', $phase, $exception::class);
+            $type = self::typeName($exception);
         }
 
-        return Result::fail(PluginErrors::failed($this->manifest->id, $phase, $reason));
+        return Result::fail(PluginErrors::failed($this->manifest->id, $phase, $type));
+    }
+
+    /**
+     * 返回异常的简单类名（lifecycle.md §7.6）：不带命名空间；匿名类去掉 PHP 附在名字后面的文件路径。
+     */
+    private static function typeName(\Throwable $exception): string
+    {
+        $name = $exception::class;
+        // 匿名类的名字是「父类@anonymous」后接 NUL、文件路径与序号：路径不能出现在交给宿主的错误里
+        $nul = strpos($name, "\0");
+        if ($nul !== false) {
+            $name = substr($name, 0, $nul);
+        }
+        $separator = strrpos($name, '\\');
+
+        return $separator === false ? $name : substr($name, $separator + 1);
     }
 
     /**
@@ -769,36 +904,7 @@ final class PluginService
     }
 
     /**
-     * 读流式调用的下一帧；流结束时为 null。
-     *
-     * @throws GrpcException 流已断开或帧解不开
-     */
-    private function frame(ServerCall $call): ?V1\StreamFrame
-    {
-        $bytes = $call->receive();
-        if ($bytes === null) {
-            return null;
-        }
-        $frame = new V1\StreamFrame();
-        try {
-            $frame->mergeFromString($bytes);
-        } catch (\Exception $exception) {
-            throw new GrpcException(GrpcStatus::INVALID_ARGUMENT, 'A stream frame cannot be decoded.', [], $exception);
-        }
-
-        return $frame;
-    }
-
-    /**
-     * 判断是否接受调用：Start 之后、停止之前。
-     */
-    private function serving(): bool
-    {
-        return $this->lifecycle->is(LifecycleState::Started, LifecycleState::Ready, LifecycleState::Degraded);
-    }
-
-    /**
-     * 未就绪或正在停止的失败。
+     * 不在可服务状态时的失败：`state` 是此刻的状态名（lifecycle.md §7.3）。
      */
     private function unavailable(): Error
     {
@@ -806,10 +912,10 @@ final class PluginService
     }
 
     /**
-     * 返回停止的取消：Stop 或 stdin 关闭时触发。
+     * 不在次序表里的调用（lifecycle.md §7.1）：什么都不做、状态不变。
      */
-    public function drainingCancellation(): AmpCancellation
+    private static function outOfOrder(string $message): GrpcException
     {
-        return $this->draining->getCancellation();
+        return new GrpcException(GrpcStatus::FAILED_PRECONDITION, $message);
     }
 }

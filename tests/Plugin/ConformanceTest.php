@@ -8,7 +8,7 @@ use PHPUnit\Framework\TestCase;
 
 /**
  * 用规范仓库的黑盒运行器（spec/conformance 的 xihan-conformance，版本随子模块锁定）对示例插件 echo 跑全部用例
- * （invocation.md §7）：把 echo 放进临时目录，按当前平台生成启动脚本，断言 8 个用例都通过、没有跳过。
+ * （invocation.md §7）：把 echo 放进临时目录，按当前平台生成启动脚本，断言 14 个用例都通过、没有跳过。
  *
  * 运行器是 Go 程序，以 `go run` 从子模块运行；没有 Go 时跳过。宿主只继承 handshake.md §1 列出的环境变量，所以启动脚本
  * 写死 PHP 与入口脚本的绝对路径。
@@ -17,7 +17,8 @@ final class ConformanceTest extends TestCase
 {
     /** 运行器的全部用例，按执行顺序 */
     private const array CASES = [
-        'handshake', 'refusal', 'session', 'lifecycle', 'unknown-operation', 'declared-operations', 'event', 'stdin',
+        'handshake', 'refusal', 'session', 'lifecycle', 'order', 'unknown-operation', 'declared-operations',
+        'unavailable', 'event', 'unsubscribed', 'stream', 'configuration', 'stop-early', 'stdin',
     ];
 
     public function testEchoPassesTheBlackBoxRunner(): void
