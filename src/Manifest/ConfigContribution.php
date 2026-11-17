@@ -14,8 +14,6 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
  */
 final readonly class ConfigContribution implements \JsonSerializable
 {
-    /** 配置节文法；D 修饰符让 $ 只匹配串尾 */
-
     /**
      * 创建配置节贡献。
      *

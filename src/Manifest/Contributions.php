@@ -17,10 +17,6 @@ use XiHan\Framework\Primitives\OperationId;
  */
 final readonly class Contributions implements \JsonSerializable
 {
-    /** 权限码文法（RFC-0008） */
-
-    /** 健康项文法，约定 <领域>.<机制>.<对象> */
-
     /** @var list<PipelineContribution> */
     public array $pipeline;
 

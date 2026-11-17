@@ -14,10 +14,6 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
  */
 final readonly class Binding implements \JsonSerializable
 {
-    /** 绑定名文法；D 修饰符让 $ 只匹配串尾 */
-
-    /** 资源类型文法，如 connection:relational、queue */
-
     /**
      * 创建绑定。
      *
