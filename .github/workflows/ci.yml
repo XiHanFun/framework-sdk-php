@@ -4,9 +4,9 @@ name: CI
 # 黑盒运行器验证示例插件的一致性测试，它需要 Go）；另核对插件协议的生成代码与 spec/plugin/plugin.proto 一致。
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
@@ -39,7 +39,7 @@ jobs:
           tools: composer:v2
           coverage: none
 
-      # 一致性测试以 go run 从子模块运行黑盒运行器；没有 Go 时测试会跳过，CI 必须装上
+      # 一致性测试以 go run 从子模块运行黑盒运行器；没有 Go 时测试会失败，CI 必须装上
       - name: 安装 Go
         uses: actions/setup-go@v5
         with:

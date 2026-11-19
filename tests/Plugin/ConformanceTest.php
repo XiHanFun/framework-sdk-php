@@ -10,8 +10,8 @@ use PHPUnit\Framework\TestCase;
  * 用规范仓库的黑盒运行器（spec/conformance 的 xihan-conformance，版本随子模块锁定）对示例插件 echo 跑全部用例
  * （invocation.md §7）：把 echo 放进临时目录，按当前平台生成启动脚本，断言 14 个用例都通过、没有跳过。
  *
- * 运行器是 Go 程序，以 `go run` 从子模块运行；没有 Go 时跳过。宿主只继承 handshake.md §1 列出的环境变量，所以启动脚本
- * 写死 PHP 与入口脚本的绝对路径。
+ * 运行器是 Go 程序，以 `go run` 从子模块运行；没有 Go 时失败，只有设了环境变量 `XIHAN_CONFORMANCE_REQUIRED=0` 才跳过。
+ * 宿主只继承 handshake.md §1 列出的环境变量，所以启动脚本写死 PHP 与入口脚本的绝对路径。
  */
 final class ConformanceTest extends TestCase
 {
@@ -25,7 +25,16 @@ final class ConformanceTest extends TestCase
     {
         $go = self::findGo();
         if ($go === null) {
-            self::markTestSkipped('Go is not on PATH; the black-box runner (spec/conformance) needs it.');
+            // 缺 Go 默认失败，门禁不因环境里没有运行器而静默变绿；只有显式设为 0 才跳过
+            if (getenv('XIHAN_CONFORMANCE_REQUIRED') === '0') {
+                self::markTestSkipped(
+                    'Go is not on PATH and XIHAN_CONFORMANCE_REQUIRED=0; the black-box runner (spec/conformance) needs it.',
+                );
+            }
+            self::fail(
+                'Go is not on PATH; the black-box runner (spec/conformance) needs it. '
+                . 'Install Go, or set XIHAN_CONFORMANCE_REQUIRED=0 to skip this test.',
+            );
         }
         $root = dirname(__DIR__, 2);
         $directory = self::pluginDirectory($root);
