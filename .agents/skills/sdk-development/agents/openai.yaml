@@ -1,0 +1,7 @@
+interface:
+  display_name: "PHP SDK 开发"
+  short_description: "按规范与 .NET 实现原语、清单、上下文、管道与操作契约"
+  default_prompt: "使用 $xihan-sdk-php-development 实现并验证一项 PHP SDK 能力。"
+
+policy:
+  allow_implicit_invocation: true

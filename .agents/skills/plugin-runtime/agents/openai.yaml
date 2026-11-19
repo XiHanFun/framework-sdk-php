@@ -1,0 +1,7 @@
+interface:
+  display_name: "PHP SDK 插件运行时"
+  short_description: "实现并验证进程外插件运行时、gRPC 帧层与协议代码"
+  default_prompt: "使用 $xihan-sdk-php-plugin-runtime 修改插件运行时并用黑盒运行器验证。"
+
+policy:
+  allow_implicit_invocation: true

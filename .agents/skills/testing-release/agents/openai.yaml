@@ -1,0 +1,7 @@
+interface:
+  display_name: "PHP SDK 测试与验证"
+  short_description: "按 CI 运行门禁、向量覆盖与本机 Docker 验证"
+  default_prompt: "使用 $xihan-sdk-php-testing-release 运行并报告 PHP SDK 的全部门禁。"
+
+policy:
+  allow_implicit_invocation: true

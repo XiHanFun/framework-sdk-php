@@ -1,0 +1,7 @@
+interface:
+  display_name: "PHP SDK 创建 PR"
+  short_description: "按固定几段准备、检查并创建 Pull Request"
+  default_prompt: "使用 $xihan-sdk-php-create-pr 为当前分支准备并创建 Pull Request。"
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,7 @@
+interface:
+  display_name: "PHP SDK 变更整理"
+  short_description: "整理使用者可感知的变化与迁移方式到文档页"
+  default_prompt: "使用 $xihan-sdk-php-changelog-collect 整理指定范围的破坏性改动与迁移。"
+
+policy:
+  allow_implicit_invocation: true
