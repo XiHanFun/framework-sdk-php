@@ -251,7 +251,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.3-cli vendor/bin/phpunit
 
 把镜像换成 `php:8.4-cli` 再跑一遍。`composer.json` 把依赖解析的平台锁在 PHP 8.3.0，同一份 `vendor/` 在 8.3 与 8.4 上都能运行。CI 在 ubuntu 与 windows 上以 PHP 8.3、8.4 跑同样的门禁。
 
-- 向量全集测试（`tests/VectorCoverageTest.php`）核对规范的每个向量文件要么有测试回放、要么写明豁免：规范新增向量文件时它失败，要么补上回放，要么写进它的豁免并给出理由。
+- 向量全集测试（`tests/VectorCoverageTest.php`）按 `spec/conformance/profiles.json` 核对认领的一致性档的向量：规范在认领的档里新增向量时它失败，要么补上回放，要么列为缺口并写明理由。
 - 插件运行时的一致性测试（`tests/Plugin/ConformanceTest.php`）用 `go run` 从子模块运行规范的黑盒运行器，需要 Go（版本不低于 `spec/conformance/go.mod`）；`PATH` 里没有 `go` 时失败，确实要跳过时设 `XIHAN_CONFORMANCE_REQUIRED=0`。官方 PHP 镜像里没有 Go：本机验证时在 PHP 容器里装 Go 的 linux 版本再跑 `vendor/bin/phpunit`，或给上面的 `docker run` 加 `-e XIHAN_CONFORMANCE_REQUIRED=0` 跳过它。CI 装好 Go，测试真正运行。
 - 进程层面的测试（`tests/Plugin/ProcessTest.php`）以子进程运行 `examples/echo`：SIGTERM 的用例要 pcntl，没有时跳过；官方 PHP 镜像不带 pcntl，`docker-php-ext-install pcntl` 之后可跑。
 - 协议代码 `src/Plugin/Protocol/V1` 由 `php scripts/generate-plugin-protocol.php` 从 `spec/plugin/plugin.proto` 生成并提交：需要 `PATH` 里有 protoc，版本与 google/protobuf 的运行时同属一个发布（脚本里写明，换版本时两处一起改）。改协议后重新生成；CI 重新生成并核对与提交的一致。
@@ -259,6 +259,13 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.3-cli vendor/bin/phpunit
 ## 状态
 
 `v0.1`（未发布）：原语、清单、调用上下文、管道、操作与进程外插件运行时 `plugin`（`xihan.plugin.v1`）可用，示例插件 `examples/echo` 通过规范黑盒运行器的全部用例。`caching.distributed@1` 等远程 Provider 的操作集还没有提供。版本随普通标签发布（`v0.1.0`），`composer.json` 不写版本。包名 `xihanfun/xihan-framework` 已在 Packagist 登记。
+
+按 RFC-0024：
+
+- 规范版本：钉在 framework-spec 的提交 `386501f`；规范还没有打标签，首个标签计划是 `v1.0.0-rc.1`。
+- 认领的档：`core` 与 `plugin`（`spec/conformance/profiles.json`）。
+- 缺口：无；认领的档的向量全部回放，`plugin` 运行器子命令通过。
+- 成熟度：在有钉在规范标签上的发布版之前是 Experimental。
 
 ## 生态
 

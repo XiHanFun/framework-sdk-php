@@ -251,7 +251,7 @@ docker run --rm -v "${PWD}:/app" -w /app php:8.3-cli vendor/bin/phpunit
 
 Then run them again with the image changed to `php:8.4-cli`. `composer.json` pins the platform for dependency resolution to PHP 8.3.0, so the same `vendor/` runs on both 8.3 and 8.4. CI runs the same gates on ubuntu and windows with PHP 8.3 and 8.4.
 
-- The vector coverage test (`tests/VectorCoverageTest.php`) checks that every vector file of the spec is either replayed by a test or exempted: when the spec adds a vector file, it fails until a test replays the file or the file is added to its exemptions with a reason.
+- The vector coverage test (`tests/VectorCoverageTest.php`) checks the vectors of the claimed conformance profiles against `spec/conformance/profiles.json`: when the spec adds a vector to a claimed profile, it fails until a test replays the file or the file is listed as a gap with a reason.
 - The conformance test of the plugin runtime (`tests/Plugin/ConformanceTest.php`) runs the spec's black-box runner from the submodule with `go run` and needs Go (at least the version in `spec/conformance/go.mod`); it fails when `go` is not on `PATH`, and is skipped only when `XIHAN_CONFORMANCE_REQUIRED=0` is set. The official PHP images have no Go: to verify locally, install the linux build of Go in the PHP container and then run `vendor/bin/phpunit`, or add `-e XIHAN_CONFORMANCE_REQUIRED=0` to the `docker run` command above to skip it. CI installs Go, so the test really runs.
 - The process-level tests (`tests/Plugin/ProcessTest.php`) run `examples/echo` as a child process: the SIGTERM case needs pcntl and is skipped without it; the official PHP images have no pcntl, which `docker-php-ext-install pcntl` adds.
 - The protocol code `src/Plugin/Protocol/V1` is generated from `spec/plugin/plugin.proto` by `php scripts/generate-plugin-protocol.php` and committed: it needs protoc on `PATH`, from the same release as the google/protobuf runtime (stated in the script; change both together). Regenerate after changing the protocol; CI regenerates and checks that the result matches what is committed.
@@ -259,6 +259,13 @@ Then run them again with the image changed to `php:8.4-cli`. `composer.json` pin
 ## Status
 
 `v0.1` (unreleased): primitives, manifests, the invocation context, the pipeline, operations and the out-of-process plugin runtime `plugin` (`xihan.plugin.v1`) are usable, and the sample plugin `examples/echo` passes every case of the spec's black-box runner. The operation sets of remote providers such as `caching.distributed@1` are not provided yet. Versions are released with plain tags (`v0.1.0`), and `composer.json` does not carry a version. The package name `xihanfun/xihan-framework` is registered on Packagist.
+
+Per RFC-0024:
+
+- Spec version: pinned to framework-spec commit `386501f`; the spec has no tag yet, and its first tag is planned as `v1.0.0-rc.1`.
+- Claimed profiles: `core` and `plugin` (`spec/conformance/profiles.json`).
+- Gaps: none; every vector of the claimed profiles is replayed, and the `plugin` runner subcommand passes.
+- Maturity: Experimental until there is a release pinned to a spec tag.
 
 ## Ecosystem
 
