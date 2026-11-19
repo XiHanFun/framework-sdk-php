@@ -563,15 +563,9 @@ final class PluginService
         $subscription = $call->cancellation()->subscribe(static fn () => $source->cancel());
         $context = Protocol::context($metadata, $call->timeout(), $source->cancellation(), $this->clock);
         $context->items()->set(Host::ITEM_KEY, $this->host);
-        $timer = null;
         $token = $context->cancellation();
-        $remaining = $context->remainingTime($this->clock->now());
-        if ($token instanceof DeadlineCancellation && $remaining !== null) {
-            // 同步执行模型下截止令牌在轮询时才核对时钟：接入事件循环后在截止时刻主动核对，登记的回调准时执行
-            $timer = EventLoop::delay($remaining, static function () use ($token): void {
-                $token->poll();
-            });
-        }
+        // 同步执行模型下截止令牌在轮询时才核对时钟：接入事件循环后在截止时刻主动核对，登记的回调准时执行
+        $timer = $token instanceof DeadlineCancellation ? DeadlineTimer::start($token, $this->clock) : null;
         $tenant = $context->tenant();
         $this->tenants->enter($tenant);
         try {
@@ -579,9 +573,7 @@ final class PluginService
         } finally {
             unset($this->inFlight[$number]);
             $this->tenants->leave($tenant);
-            if ($timer !== null) {
-                EventLoop::cancel($timer);
-            }
+            $timer?->cancel();
             $call->cancellation()->unsubscribe($subscription);
             if ($this->inFlight === [] && $this->idle !== null && !$this->idle->isComplete()) {
                 $this->idle->complete();

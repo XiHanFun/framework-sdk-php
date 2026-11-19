@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Tests\Plugin;
 
+use Amp\CancelledException;
 use PHPUnit\Framework\TestCase;
+use Revolt\EventLoop;
 use XiHan\Framework\Invocation\CancellationSource;
 use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Operation\Contract;
@@ -22,6 +24,8 @@ use XiHan\Framework\Plugin\Runtime;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Stability;
+
+use function Amp\delay;
 
 /**
  * 回调宿主（invocation.md §5）：测试扮演宿主并提供假的 Host 服务，核对回调端点的选择、本地核对的顺序（端点、权限、
@@ -141,6 +145,44 @@ final class HostCallbackTest extends TestCase
             self::assertSame([$timeout, $timeout], $result['expiredBatch']);
             self::assertSame([$cancelled], $result['cancelledBatch']);
             self::assertSame([], $host->received);
+        } finally {
+            $harness->close();
+            $host->close();
+        }
+    }
+
+    public function testCallbacksInFlightAtTheDeadlineEndWithDeadlineExceededAndCallerCancellationWithCancelled(): void
+    {
+        // 宿主慢于截止时间：回调发出之后一直不应答，直到被取消
+        $host = new FakeHost(static function (V1\InvokeRequest $request, ServerCall $call): void {
+            try {
+                delay(5, cancellation: $call->cancellation());
+            } catch (CancelledException) {
+                return;
+            }
+            $call->send((new V1\InvokeResponse())->setStatus((new V1\Status())->setOk(true))->serializeToString());
+        });
+        $harness = $this->started((string) $host->endpoint());
+        try {
+            $this->scenario = static function (Context $context, Host $client): mixed {
+                // 运行时还原的上下文：插件运行时在截止时刻核对它的截止令牌，回调途中到了截止时间
+                $deadline = self::describe($client->invoke($context, 'orders.get')->outcome->error());
+                // 调用方在回调途中取消：截止时间还远
+                $source = new CancellationSource();
+                $caller = Context::create(cancellation: $source->cancellation(), timeout: 30.0, baggage: $context->baggage());
+                EventLoop::delay(0.2, static fn () => $source->cancel());
+
+                return [
+                    'deadline' => $deadline,
+                    'cancelled' => self::describe($client->invoke($caller, 'orders.get')->outcome->error()),
+                ];
+            };
+            $deadline = (new \DateTimeImmutable('+300 milliseconds', new \DateTimeZone('UTC')))->format('Y-m-d\TH:i:s.u') . '0+00:00';
+            $result = self::payload($harness->invoke('relay.run', '{}', metadata: (new V1\InvocationMetadata())->setDeadline($deadline)));
+            // 截止时间到了按 DeadlineExceeded，调用方取消按「Cancelled，取消信号已触发」（invocation.md §5）
+            self::assertSame('KERNEL_TIMEOUT_001 kernel.invocation.deadline_exceeded null', $result['deadline']);
+            self::assertSame('KERNEL_CANCELLED_001 kernel.invocation.cancelled null', $result['cancelled']);
+            self::assertSame(['Invoke', 'Invoke'], array_column($host->received, 'method'));
         } finally {
             $harness->close();
             $host->close();

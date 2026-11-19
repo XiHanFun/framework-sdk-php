@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Plugin;
 
 use Amp\DeferredCancellation;
+use XiHan\Framework\Invocation\CancellationReason;
 use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Operation\Response;
 use XiHan\Framework\Plugin\Internal\CallbackFailures;
@@ -248,7 +249,7 @@ final class Host
     }
 
     /**
-     * 发出一元回调：gRPC 截止时间取上下文的剩余时间，上下文的取消令牌触发即取消回调。
+     * 发出一元回调：gRPC 截止时间取上下文的剩余时间，调用方取消即取消回调；截止时间到了由 gRPC 自己的截止时间结束回调。
      *
      * @throws GrpcException
      */
@@ -257,7 +258,16 @@ final class Host
         $client = $this->client ?? throw new GrpcException(GrpcStatus::UNAVAILABLE, PluginErrors::REASON_NO_ENDPOINT);
         $cancellation = new DeferredCancellation();
         // 令牌已经取消时 subscribe 立即回调，回调随即以取消结束、不发给宿主
-        $subscription = $context->cancellation()->subscribe(static fn () => $cancellation->cancel());
+        $subscription = $context->cancellation()->subscribe(
+            static function (CancellationReason $reason) use ($cancellation): void {
+                // 截止时间到了不在这里取消：gRPC 调用带着同一个截止时间，由 ClientCall 自己以 DEADLINE_EXCEEDED 结束。
+                // 插件运行时在截止时刻核对上下文的截止令牌，它常常先于 ClientCall 的截止时间触发，这里一取消，
+                // ClientCall 看到的是调用方取消，回调就报成 CANCELLED（invocation.md §5）
+                if ($reason !== CancellationReason::DeadlineExceeded) {
+                    $cancellation->cancel();
+                }
+            },
+        );
         try {
             return $client->unary(
                 $path,
