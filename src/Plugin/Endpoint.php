@@ -5,25 +5,19 @@ declare(strict_types=1);
 namespace XiHan\Framework\Plugin;
 
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\Internal\Whitespace;
 
 /**
  * 一个本机 gRPC 端点：网络类型与地址（handshake.md §2、§4）。
  *
  * 文本写法 `<network> <address>` 用于环境变量 XIHAN_PLUGIN_HOST_ADDRESS 的每一项；握手行在前面加 `xihan-plugin/1`。
- * 地址是一个或多个规范所说的空白之外的字符（非 ASCII 字母与 `;` 都可以），tcp 的地址只能是回环地址加端口：
+ * 地址是一个或多个规范所说的空白（RFC-0001「空白字符」）之外的字符（非 ASCII 字母与 `;` 都可以），tcp 的地址只能是回环地址加端口：
  * `127.0.0.0/8` 的点分十进制（四段、每段 0–255、不带前导零）或 `[::1]`，端口 1–65535、不带正负号与前导零。
  */
 final readonly class Endpoint implements \Stringable
 {
     /** 握手行的格式版本：只在行格式变化时递增，与协议版本无关。 */
     public const string HANDSHAKE_LINE_VERSION = 'xihan-plugin/1';
-
-    /**
-     * 规范所说的空白（handshake.md §2，与 .NET 正则的 \s 相同）：PCRE 的 \s 不带 u 修饰符时只认 ASCII 空白，
-     * 带上也与这个集合不完全相同，所以逐个写出
-     */
-    private const string WHITESPACE = '/[\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}\x{2000}-\x{200A}'
-        . '\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}]/u';
 
     /** 回环 IPv4 的后三段：0–255、不带前导零 */
     private const string OCTET = '(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])';
@@ -88,7 +82,7 @@ final readonly class Endpoint implements \Stringable
     public static function isAddress(string $address): bool
     {
         // preg_match 遇到不合法的 UTF-8 返回 false：宿主按 UTF-8 解码时会把它换成 U+FFFD、连不上，所以一律不合法
-        return $address !== '' && preg_match(self::WHITESPACE, $address) === 0;
+        return $address !== '' && preg_match(Whitespace::PATTERN, $address) === 0;
     }
 
     /**

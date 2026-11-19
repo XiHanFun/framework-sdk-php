@@ -6,6 +6,7 @@ namespace XiHan\Framework\Primitives;
 
 use XiHan\Framework\Primitives\Internal\Json;
 use XiHan\Framework\Primitives\Internal\Values;
+use XiHan\Framework\Primitives\Internal\Whitespace;
 use XiHan\Framework\Primitives\Internal\Wire;
 
 /**
@@ -55,13 +56,14 @@ final readonly class Error implements \JsonSerializable, \Stringable
      *
      * @param array<array-key, mixed> $details 结构化细节；只允许 JSON 可表示的值
      *
-     * @throws InvalidArgumentException 码不合法、文案为空或细节不是 JSON 可表示的值（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 码不合法、文案为空或只有空白，或细节不是 JSON 可表示的值（PRIMITIVES_VALIDATION_001）
      */
     public static function literal(string $code, string $text, array $details = [], ?Error $inner = null): self
     {
         ErrorCode::validate($code);
-        if ($text === '') {
-            throw new InvalidArgumentException('A literal error needs a text.');
+        // 文案至少要有一个空白之外的字符（RFC-0001「空白字符」，ADR-0245）：只有空白与空串一样不是文案
+        if (Whitespace::isBlank($text)) {
+            throw new InvalidArgumentException('A literal error needs a text that is not empty or whitespace.');
         }
 
         return new self($code, null, $text, self::validDetails($details), $inner);
@@ -170,9 +172,9 @@ final readonly class Error implements \JsonSerializable, \Stringable
     /**
      * 从线上编码还原；接受 fromJson 按值模型读出的 JsonObject，也接受 `json_decode` 的对象（stdClass）或关联数组。
      *
-     * 规则（RFC-0001「Result」）：code 必填且合文法，message 必填且是非空字符串；messageKey、details、inner 可选，
-     * 写了就不能是 null——messageKey 合消息键文法，details 是 JSON 对象，inner 是合法的 Error。未知成员忽略。
-     * 还原出的 message 成为已解析的文案。
+     * 规则（RFC-0001「Result」）：code 必填且合文法，message 必填且是字符串，至少含一个空白（RFC-0001「空白字符」）
+     * 之外的字符；messageKey、details、inner 可选，写了就不能是 null——messageKey 合消息键文法，details 是 JSON 对象，
+     * inner 是合法的 Error。未知成员忽略。还原出的 message 成为已解析的文案。
      *
      * @throws InvalidArgumentException 线上编码不合法（PRIMITIVES_VALIDATION_001）
      */
@@ -187,8 +189,9 @@ final readonly class Error implements \JsonSerializable, \Stringable
             ));
         }
         $message = $members['message'] ?? null;
-        if (!is_string($message) || $message === '') {
-            throw self::invalidMember('message', 'be a non-empty string');
+        // 空串与只有空白都不合法（RFC-0001「Result」与「空白字符」，ADR-0245）：Error 的文案至少要有一个空白之外的字符
+        if (!is_string($message) || Whitespace::isBlank($message)) {
+            throw self::invalidMember('message', 'be a string that is not empty or whitespace');
         }
         $messageKey = null;
         if (array_key_exists('messageKey', $members)) {
@@ -278,12 +281,13 @@ final readonly class Error implements \JsonSerializable, \Stringable
     /**
      * 填入已解析的文案。
      *
-     * @throws InvalidArgumentException 文案为空（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException 文案为空或只有空白（PRIMITIVES_VALIDATION_001）
      */
     public function withText(string $text): self
     {
-        if ($text === '') {
-            throw new InvalidArgumentException('The text of an error must not be empty.');
+        // 与 literal() 同一条规则（RFC-0001「空白字符」，ADR-0245）
+        if (Whitespace::isBlank($text)) {
+            throw new InvalidArgumentException('The text of an error must not be empty or whitespace.');
         }
 
         return new self($this->code, $this->messageKey, $text, $this->details, $this->inner);

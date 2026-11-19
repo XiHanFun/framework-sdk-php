@@ -81,6 +81,37 @@ final class ErrorTest extends TestCase
         }
     }
 
+    public function testFreeTextMustHaveACharacterOtherThanWhitespace(): void
+    {
+        // RFC-0001「空白字符」的 25 个码位；ctype_space 与 trim 默认只认 ASCII，按字节判断也认不出多字节的空白
+        $every = "\t\n\u{000B}\u{000C}\r \u{0085}\u{00A0}\u{1680}\u{2000}\u{2001}\u{2002}\u{2003}\u{2004}\u{2005}\u{2006}"
+            . "\u{2007}\u{2008}\u{2009}\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}";
+        $characters = preg_split('//u', $every, -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        self::assertCount(25, $characters);
+        $keyed = Error::notFound('ORDERS_NOTFOUND_001', 'orders.missing');
+        foreach (['', "\u{00A0}", $every, "\u{0085}", ...$characters] as $blank) {
+            $name = (string) json_encode($blank);
+            $cases = [
+                'literal' => static fn (): Error => Error::literal('ORDERS_NOTFOUND_001', $blank),
+                'literal with details' => static fn (): Error => Error::literal('ORDERS_NOTFOUND_001', $blank, ['id' => 1]),
+                'withText' => static fn (): Error => $keyed->withText($blank),
+            ];
+            foreach ($cases as $case => $create) {
+                try {
+                    $create();
+                    self::fail(sprintf('%s %s must be rejected', $case, $name));
+                } catch (InvalidArgumentException $exception) {
+                    self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode(), $case . ' ' . $name);
+                }
+            }
+        }
+        // U+001C–U+001F、零宽空格不是空白，两端的空白原样保留
+        foreach (["\u{001C}", "\u{200B}", " boom\t"] as $text) {
+            self::assertSame($text, Error::literal('ORDERS_NOTFOUND_001', $text)->message());
+            self::assertSame($text, $keyed->withText($text)->message());
+        }
+    }
+
     public function testDetailsWriteNumbersByTheValueModel(): void
     {
         // 非有限的浮点写成字符串，整数值的浮点带小数点（RFC-0001「Result」，ADR-0236）

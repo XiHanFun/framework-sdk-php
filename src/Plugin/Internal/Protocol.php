@@ -15,6 +15,7 @@ use XiHan\Framework\Primitives\BaggageKeys;
 use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\Internal\Json;
+use XiHan\Framework\Primitives\Internal\Whitespace;
 use XiHan\Framework\Primitives\Internal\Wire;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonObject;
@@ -64,7 +65,8 @@ final class Protocol
     /**
      * 读入宿主写来的 Error（invocation.md §3「读入」，向量 error-reading.json）：code 不合文法时整个错误换成
      * PLUGINS_UNEXPECTED_001 + plugins.process.failed（`phase` 一律 invoke，不论是哪个 RPC，原来的 inner 丢掉）；message_key
-     * 合文法的按键处理（不取 text），否则是自由文本错误，文案取 text，text 为空时取 code；details 按 details() 读；inner 同此。
+     * 合文法的按键处理（不取 text），否则是自由文本错误，文案取 text，text 为空或只有空白时取 code；details 按 details() 读；
+     * inner 同此。
      */
     public static function fromProtoError(V1\Error $error, string $pluginId): Error
     {
@@ -81,7 +83,8 @@ final class Protocol
         }
         $text = $error->getText();
 
-        return Error::literal($code, $text === '' ? $code : $text, $details, $innerError);
+        // Error 的文案不能只有空白（RFC-0001「空白字符」，ADR-0245）：只有空白的 text 与空串一样取 code
+        return Error::literal($code, Whitespace::isBlank($text) ? $code : $text, $details, $innerError);
     }
 
     /**
