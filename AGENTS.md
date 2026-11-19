@@ -40,6 +40,7 @@ framework-sdk-php 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 ├─ .claude/skills -> ../.agents/skills   # Claude Code 技能兼容入口
 ├─ CLAUDE.md -> AGENTS.md                # Claude Code 仓库指令入口
 ├─ .github/workflows/ci.yml              # 门禁：格式、静态检查、测试，协议代码核对
+├─ .github/workflows/release.yml         # 发布：推送 v* 标签触发，核对后等 Packagist 收录
 ├─ composer.json                         # 包名、依赖、suggest、脚本
 ├─ phpcs.xml.dist                        # PSR-12，范围 src、tests、examples、scripts，不查生成的协议类
 ├─ phpstan.neon.dist                     # level max，范围同上
@@ -57,7 +58,9 @@ framework-sdk-php 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 │     └─ Protocol/V1/                    # protoc 生成并提交，不手改
 ├─ tests/                                # PHPUnit，目录与 src 对应；Vectors.php 读规范向量，VectorCoverageTest.php 按档核对
 ├─ examples/echo/                        # 示例插件，黑盒运行器的被测对象
-└─ scripts/generate-plugin-protocol.php  # 从 spec/plugin/plugin.proto 生成协议代码
+└─ scripts/
+   ├─ generate-plugin-protocol.php       # 从 spec/plugin/plugin.proto 生成协议代码
+   └─ release-check.sh                   # 发版核对：打标签之前与 release.yml 的 guard 都跑它
 ```
 
 ## 常用命令
@@ -75,6 +78,7 @@ framework-sdk-php 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 | 校验 `composer.json` | `composer validate`（CI 不跑，改 `composer.json` 时跑） |
 | 生成协议代码 | `php scripts/generate-plugin-protocol.php [protoc 的路径]` |
 | 黑盒运行器 | 在 `spec/conformance` 下 `go run ./cmd/xihan-conformance plugin --dir <插件目录> --json` |
+| 发版核对 | `bash scripts/release-check.sh vX.Y.Z main`（打标签之前跑，联网取 `origin/main` 与规范的远端标签） |
 
 本机没有 PHP 与 Composer 时用 Docker，镜像与命令见 `testing-release` 技能；PHP 在 Windows 上只有 CI 验证。
 
@@ -129,13 +133,15 @@ framework-sdk-php 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 - 版本随普通标签 `vX.Y.Z` 发布，`composer.json` 不写 `version`；握手上报的 `FrameworkInfo::SDK_VERSION`（`src/Primitives/FrameworkInfo.php`）随发布标签一起更新。
 - 包名 `xihanfun/xihan-framework`，已在 Packagist 登记。
 - 发预发布或正式版时 `spec/` 必须正好在规范标签上：预发布可钉 `vX.Y.Z-rc.N`，正式版只钉规范的正式版标签（RFC-0024「实现钉规范」第 2 条）。
-- 仓库没有发布工作流；打标签、推送与 Packagist 上的操作都改变外部状态，要用用户自己的凭据，只在用户明确要求时执行，步骤见 `version-release` 技能。
+- 打标签之前跑 `bash scripts/release-check.sh v<版本> main`（标签只从 `main` 发、标签号等于 `SDK_VERSION`、规范钉在标签上）；推送 `v*` 标签触发 `.github/workflows/release.yml`，guard 用同一份脚本复核，再等 Packagist 收录。标签推上去就已发布，guard 只能报红、拦不住；GitHub Release 与 XiHan.Framework 一样在标签推送后手动建。
+- 打标签、推送与 Packagist 上的操作都改变外部状态，要用用户自己的凭据，只在用户明确要求时执行，步骤见 `version-release` 技能。
 
 ## 分支
 
 - 日常提交在 `dev`。
 - `main` 只在用户明确说「推送并快进 main」时由 `dev` 快进（`git fetch . dev:main`，不是快进就停下查）。
 - CI（`.github/workflows/ci.yml`）在 `main`、`dev` 的 push 与以 `main`、`dev` 为目标的 PR 上跑，也可手动触发（`workflow_dispatch`）；README 的 CI 徽章看 `main`。
+- 发版工作流（`.github/workflows/release.yml`）只在推送 `v*` 标签、或手动运行时选中版本标签时运行，见「发布」与 `version-release` 技能。
 
 ## Git 与提交
 

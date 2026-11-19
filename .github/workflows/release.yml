@@ -1,0 +1,67 @@
+name: 发布
+
+# 推送 v* 标签（如 v0.1.0-rc.1、v0.1.0）触发。
+#
+# Packagist 随标签收录（仓库的 GitHub 钩子通知它更新）：推送标签那一刻版本就对外可见，工作流拦不住。
+# 所以打标签之前先在本地跑 scripts/release-check.sh <标签>（version-release 技能），guard 再跑同一份脚本复核：
+# 不通过就报红，不删标签，改正之后发下一个号。
+#
+# guard 通过后等 Packagist 收录这个版本，十五分钟内没收录就报红，
+# 多半是 Packagist 的钩子没触发，到 packagist.org 的包页面点 Update。
+# GitHub Release 与 XiHan.Framework 一样，在标签推送之后手动建（version-release 技能）。
+# 手动 Run workflow 时必须选中一个版本标签；选分支会被 guard 拦下。
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: 发版核对
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: 检出
+        uses: actions/checkout@v5
+        with:
+          # 要拿完整历史才能判断祖先关系；子模块不检出，脚本读树里记的指针
+          fetch-depth: 0
+
+      - name: 只接受版本标签
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::发布只接受版本标签触发，收到 $GITHUB_REF_TYPE $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+      - name: 核对标签、版本与规范标签
+        id: check
+        run: bash scripts/release-check.sh "$GITHUB_REF_NAME" "$GITHUB_SHA"
+
+  packagist:
+    name: Packagist 收录
+    needs: guard
+    runs-on: ubuntu-latest
+    permissions: {}
+
+    steps:
+      - name: 等 Packagist 列出这个版本
+        run: |
+          url="https://repo.packagist.org/p2/xihanfun/xihan-framework.json"
+          for attempt in $(seq 1 30); do
+            if curl -fsSL "$url" | jq -e --arg tag "$GITHUB_REF_NAME" '.packages["xihanfun/xihan-framework"] // [] | any(.version == $tag)' >/dev/null; then
+              echo "Packagist 已收录 $GITHUB_REF_NAME"
+              exit 0
+            fi
+            echo "Packagist 还没列出 $GITHUB_REF_NAME，30 秒后重试（第 $attempt 次）"
+            sleep 30
+          done
+          echo "::error::十五分钟内 Packagist 没有列出 $GITHUB_REF_NAME。到 https://packagist.org/packages/xihanfun/xihan-framework 点 Update，并检查仓库的 Packagist 钩子。"
+          exit 1
