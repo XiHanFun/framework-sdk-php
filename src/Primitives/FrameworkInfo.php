@@ -19,7 +19,7 @@ final class FrameworkInfo
     public const string SDK_NAME = 'framework-sdk-php';
 
     /** 本 SDK 的版本；随发布标签一起更新。 */
-    public const string SDK_VERSION = '0.1.0';
+    public const string SDK_VERSION = '0.2.0-rc.1';
 
     /** SDK 仓库地址。 */
     public const string REPOSITORY = 'https://github.com/XiHanFun/framework-sdk-php';
