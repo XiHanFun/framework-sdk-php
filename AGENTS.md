@@ -124,7 +124,7 @@ framework-sdk-php 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 
 - README.md（英文）与 README_cn.md（中文）只放概览、安装、一个最小示例与链接，两份同构、同步修改。
 - 详细文档在 XiHan.Framework 仓库的 `docs/sdks/php.md`（本地克隆 `../XiHan.Framework`）。那是另一个仓库，单独提交；构建在它的根目录执行 `pnpm --dir docs build`，站内死链会让构建失败。
-- 文档正文不写会变的数字（包版本、规范提交、测试数量），用「见 `spec/` 子模块」「见 `composer.json`」指向真源；安装命令不带版本。
+- 文档正文不写会变的数字（包版本、规范提交、测试数量），用「见 `spec/` 子模块」「见 `composer.json`」指向真源；安装命令不写具体版本号，只有预发布版时写 `:<版本>` 占位并指向 Releases，首个正式版发布后去掉占位。
 - 改公开 API 或行为时同步文档页的对应节（模块、快速开始、写一个插件、与宿主共用的行为、语言映射、一致性）与其中的「破坏性改动与迁移」。
 - 代码注释引用文档时指向文档页，不指向 README。
 

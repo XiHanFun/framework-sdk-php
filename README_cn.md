@@ -38,10 +38,10 @@
 ## 安装
 
 ```bash
-composer require xihanfun/xihan-framework
+composer require xihanfun/xihan-framework:<版本>
 ```
 
-要求 PHP 8.3+，运行时只依赖 PHP 核心与 `ext-json`。插件运行时另需可选依赖，`composer.json` 的 `suggest` 列出了它们，见 [PHP SDK 文档页](https://framework.docs.xihanfun.com/sdks/php)。
+要求 PHP 8.3+，运行时只依赖 PHP 核心与 `ext-json`。插件运行时另需可选依赖，`composer.json` 的 `suggest` 列出了它们，见 [PHP SDK 文档页](https://framework.docs.xihanfun.com/sdks/php)。目前只有预发布版，Composer 默认只装稳定版，要写明版本号：`<版本>` 换成 [Releases](https://github.com/XiHanFun/framework-sdk-php/releases) 里的版本（不带 `v`）。
 
 ## 快速开始
 
@@ -74,7 +74,7 @@ $found = Result::maybeFromJson('{"ok":true,"value":null}');        // 值类型�
 
 ## 状态
 
-Experimental，尚未发布：原语、清单、调用上下文、管道、操作与进程外插件运行时可用。按 RFC-0024 认领 `core` 与 `plugin` 两个一致性档，没有缺口，钉的规范版本是 `spec/` 子模块的提交。细节见 [PHP SDK 文档页](https://framework.docs.xihanfun.com/sdks/php)。
+Experimental（已有钉在规范 rc 标签上的预发布版，到 Stable 还要钉在规范正式版标签上的发布版）：原语、清单、调用上下文、管道、操作与进程外插件运行时可用。按 RFC-0024 认领 `core` 与 `plugin` 两个一致性档，没有缺口，钉的规范版本是 `spec/` 子模块的提交。细节见 [PHP SDK 文档页](https://framework.docs.xihanfun.com/sdks/php)。
 
 ## 生态
 

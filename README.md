@@ -38,10 +38,10 @@ The PHP implementation of [XiHan Spec](https://github.com/XiHanFun/framework-spe
 ## Installation
 
 ```bash
-composer require xihanfun/xihan-framework
+composer require xihanfun/xihan-framework:<version>
 ```
 
-Requires PHP 8.3+; at runtime it depends only on the PHP core and `ext-json`. The plugin runtime needs optional dependencies as well, listed under `suggest` in `composer.json`; see the [PHP SDK page](https://framework.docs.xihanfun.com/sdks/php).
+Requires PHP 8.3+; at runtime it depends only on the PHP core and `ext-json`. The plugin runtime needs optional dependencies as well, listed under `suggest` in `composer.json`; see the [PHP SDK page](https://framework.docs.xihanfun.com/sdks/php). Only prereleases are published so far and Composer installs stable versions by default, so write the version out: replace `<version>` with a version from [Releases](https://github.com/XiHanFun/framework-sdk-php/releases) (without the `v`).
 
 ## Quick Start
 
@@ -76,7 +76,7 @@ The documentation site is in Chinese.
 
 ## Status
 
-Experimental and not yet released: primitives, manifests, the invocation context, the pipeline, operations and the out-of-process plugin runtime are usable. Per RFC-0024 it claims the `core` and `plugin` conformance profiles with no gaps, and the pinned spec version is the commit of the `spec/` submodule. Details are on the [PHP SDK page](https://framework.docs.xihanfun.com/sdks/php).
+Experimental (there is a prerelease pinned to a spec rc tag; Stable also needs a release pinned to a formal spec tag): primitives, manifests, the invocation context, the pipeline, operations and the out-of-process plugin runtime are usable. Per RFC-0024 it claims the `core` and `plugin` conformance profiles with no gaps, and the pinned spec version is the commit of the `spec/` submodule. Details are on the [PHP SDK page](https://framework.docs.xihanfun.com/sdks/php).
 
 ## Ecosystem
 

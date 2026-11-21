@@ -9,7 +9,7 @@ description: 为 PHP SDK 准备版本、更新 FrameworkInfo::SDK_VERSION、核�
 
 - 版本随普通标签 `vX.Y.Z` 发布；`composer.json` 不写 `version`，Composer 与 Packagist 从标签取版本。
 - `src/Primitives/FrameworkInfo.php` 的 `SDK_VERSION` 是握手上报的 SDK 版本，必须与标签相同（不带 `v`）。
-- 包名 `xihanfun/xihan-framework`，已在 Packagist 登记；Packagist 随标签收录，标签推上去版本就对外可见。
+- 包名 `xihanfun/xihan-framework`，已在 Packagist 登记；Packagist 随标签收录，标签推上去版本就对外可见。目前只有预发布版，README 与文档页的安装命令带 `:<版本>` 占位，首个正式版发布后去掉。
 - 标签只从 `main` 打，预发布与正式版都一样。
 
 ## 发版核对与工作流
