@@ -75,7 +75,7 @@ framework-sdk-php 是 [XiHan Spec](https://github.com/XiHanFun/framework-spec) �
 | 格式检查 / 自动修正 | `composer lint` / `composer lint:fix` |
 | 静态检查 | `composer analyse` |
 | 测试 | `composer test`；只跑一部分用 `vendor/bin/phpunit --filter <名>` |
-| 校验 `composer.json` | `composer validate`（CI 不跑，改 `composer.json` 时跑） |
+| 校验 `composer.json` | `composer validate --strict`（CI 的 `static` 作业也跑） |
 | 生成协议代码 | `php scripts/generate-plugin-protocol.php [protoc 的路径]` |
 | 黑盒运行器 | 在 `spec/conformance` 下 `go run ./cmd/xihan-conformance plugin --dir <插件目录> --json` |
 | 发版核对 | `bash scripts/release-check.sh vX.Y.Z main`（打标签之前跑，联网取 `origin/main` 与规范的远端标签） |

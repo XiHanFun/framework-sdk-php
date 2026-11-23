@@ -19,7 +19,7 @@ description: 运行或排查 PHP SDK 的门禁（格式、静态检查、测试�
 ```bash
 git submodule update --init spec
 composer install
-composer validate     # CI 不跑；改 composer.json 时必跑
+composer validate --strict     # CI 的 static 作业也跑；改 composer.json 时必跑
 composer check        # = composer lint、composer analyse、composer test
 ```
 
