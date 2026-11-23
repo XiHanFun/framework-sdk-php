@@ -86,6 +86,7 @@ final readonly class JsonObject implements \ArrayAccess, \IteratorAggregate, \Co
     /**
      * 返回成员数。
      */
+    #[\Override]
     public function count(): int
     {
         return count($this->members);
@@ -96,6 +97,7 @@ final readonly class JsonObject implements \ArrayAccess, \IteratorAggregate, \Co
      *
      * @return \Generator<string, mixed>
      */
+    #[\Override]
     public function getIterator(): \Generator
     {
         foreach ($this->members as $name => $value) {
@@ -106,6 +108,7 @@ final readonly class JsonObject implements \ArrayAccess, \IteratorAggregate, \Co
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function offsetExists(mixed $offset): bool
     {
         return array_key_exists((string) $offset, $this->members);
@@ -114,6 +117,7 @@ final readonly class JsonObject implements \ArrayAccess, \IteratorAggregate, \Co
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function offsetGet(mixed $offset): mixed
     {
         return $this->members[(string) $offset] ?? null;
@@ -124,6 +128,7 @@ final readonly class JsonObject implements \ArrayAccess, \IteratorAggregate, \Co
      *
      * @throws \LogicException
      */
+    #[\Override]
     public function offsetSet(mixed $offset, mixed $value): never
     {
         throw new \LogicException('A JSON object is immutable; use with() to get a changed copy.');
@@ -134,6 +139,7 @@ final readonly class JsonObject implements \ArrayAccess, \IteratorAggregate, \Co
      *
      * @throws \LogicException
      */
+    #[\Override]
     public function offsetUnset(mixed $offset): never
     {
         throw new \LogicException('A JSON object is immutable.');
@@ -145,6 +151,7 @@ final readonly class JsonObject implements \ArrayAccess, \IteratorAggregate, \Co
      *
      * @return \stdClass|array<array-key, mixed>
      */
+    #[\Override]
     public function jsonSerialize(): \stdClass|array
     {
         foreach (array_keys($this->members) as $name) {

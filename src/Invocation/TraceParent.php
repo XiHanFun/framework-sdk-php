@@ -93,6 +93,7 @@ final readonly class TraceParent implements \Stringable
     /**
      * 返回 `00-<trace-id>-<span-id>-<00|01>`。
      */
+    #[\Override]
     public function __toString(): string
     {
         return '00-' . $this->traceId . '-' . $this->spanId . '-' . ($this->sampled ? '01' : '00');

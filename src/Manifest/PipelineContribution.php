@@ -47,6 +47,7 @@ final readonly class PipelineContribution implements \JsonSerializable
      *
      * @return array{middleware: string, stage: string, before: list<string>, after: list<string>}
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         return [

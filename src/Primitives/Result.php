@@ -326,6 +326,7 @@ final readonly class Result implements \JsonSerializable, \Stringable
     /**
      * 返回 `Ok(值)`、无值成功的 `Ok()` 或 `Fail(码: 消息)`，便于日志。
      */
+    #[\Override]
     public function __toString(): string
     {
         if ($this->error !== null) {
@@ -340,6 +341,7 @@ final readonly class Result implements \JsonSerializable, \Stringable
      *
      * @return array{ok: true, value?: mixed}|array{ok: false, error: Error}
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         if ($this->error !== null) {

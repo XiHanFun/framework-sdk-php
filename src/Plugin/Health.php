@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Plugin;
 
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\Internal\Lists;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\LifecycleState;
 
@@ -41,28 +42,7 @@ final readonly class Health
                 $state->value,
             ));
         }
-        $this->items = self::checkedItems($items);
-    }
-
-    /**
-     * 调用方不一定经过静态检查，运行期也核对健康项的类型。
-     *
-     * @param array<array-key, mixed> $items
-     *
-     * @return list<HealthItem>
-     */
-    private static function checkedItems(array $items): array
-    {
-        $checked = [];
-        foreach ($items as $index => $item) {
-            if ($index !== count($checked) || !$item instanceof HealthItem) {
-                throw new InvalidArgumentException(
-                    sprintf('The health items must be a list of %s.', HealthItem::class),
-                );
-            }
-            $checked[] = $item;
-        }
-
-        return $checked;
+        // 调用方不一定经过静态检查，运行期也核对健康项的类型
+        $this->items = Lists::of(HealthItem::class, $items, 'The health items');
     }
 }

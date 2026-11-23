@@ -76,6 +76,7 @@ final class DeadlineCancellation implements Cancellation
      *
      * @phpstan-impure
      */
+    #[\Override]
     public function isRequested(): bool
     {
         return $this->reason() !== null;
@@ -86,6 +87,7 @@ final class DeadlineCancellation implements Cancellation
      *
      * @phpstan-impure
      */
+    #[\Override]
     public function reason(): ?CancellationReason
     {
         $this->poll();
@@ -96,6 +98,7 @@ final class DeadlineCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function subscribe(\Closure $callback): string
     {
         $this->poll();
@@ -106,6 +109,7 @@ final class DeadlineCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function unsubscribe(string $id): void
     {
         $this->state->unsubscribe($id);

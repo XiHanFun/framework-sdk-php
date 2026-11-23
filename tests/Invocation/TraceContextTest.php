@@ -27,6 +27,8 @@ final class TraceContextTest extends TestCase
             $context = Context::create(traceParent: $text);
             self::assertSame($parsed->traceId, $context->traceId(), $text);
             self::assertSame($parsed->sampled, $context->isSampled(), $text);
+            // 上游给了标志：采样决定就是它的最低位，「不采样」原样保留
+            self::assertSame($parsed->sampled, $context->sampled(), $text);
         }
     }
 
@@ -39,6 +41,7 @@ final class TraceContextTest extends TestCase
             $context = Context::create(traceParent: $text);
             self::assertTrue(TraceParent::isTraceId($context->traceId()), 'a fresh trace replaces the invalid one');
             self::assertTrue($context->isSampled());
+            self::assertNull($context->sampled(), 'an invalid traceparent leaves no upstream decision');
         }
     }
 

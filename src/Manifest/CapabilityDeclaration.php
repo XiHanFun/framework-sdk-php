@@ -72,6 +72,7 @@ final readonly class CapabilityDeclaration implements \JsonSerializable, \String
     /**
      * 返回 `id@version`。
      */
+    #[\Override]
     public function __toString(): string
     {
         return $this->id . '@' . $this->version;
@@ -82,6 +83,7 @@ final readonly class CapabilityDeclaration implements \JsonSerializable, \String
      *
      * @return array{id: string, version: string}
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         return ['id' => $this->id, 'version' => (string) $this->version];

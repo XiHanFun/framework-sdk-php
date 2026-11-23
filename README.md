@@ -52,6 +52,7 @@ use XiHan\Framework\Manifest\Manifest;
 use XiHan\Framework\Primitives\{Error, Result};
 
 $manifest = Manifest::readFile(__DIR__ . '/xihan.manifest.json'); // Throws ConfigurationException (KERNEL_CAPABILITY_006) when invalid
+$read = Manifest::tryReadFile(__DIR__ . '/xihan.manifest.json');  // Does not throw: Result<Manifest>, the failure is in $read->error()
 echo $manifest->toJson();                                         // Laid out per RFC-0002 "Writing", identical byte for byte in every language
 
 echo Result::fail(Error::literal('ORDERS_CONFLICT_001', 'stale'))->toJson();
@@ -61,7 +62,39 @@ $done = Result::unitFromJson('{"ok":true}');                       // Result wit
 $found = Result::maybeFromJson('{"ok":true,"value":null}');        // Result whose value type is Maybe; null means no value
 ```
 
-Operations and the pipeline, and writing a plugin, are covered on the [PHP SDK page](https://framework.docs.xihanfun.com/sdks/php).
+Operations, the pipeline and the invoker:
+
+```php
+use XiHan\Framework\Invocation\Context;
+use XiHan\Framework\Operation\{Contract, Expose, Invoker, Registry, Request};
+use XiHan\Framework\Pipeline\{ClosureMiddleware, PipelineBuilder};
+use XiHan\Framework\Primitives\{BaggageKeys, Error, JsonObject, PipelineStage, Result, Stability};
+
+$registry = new Registry();
+$registry->add(
+    new Contract('orders.create', Stability::Experimental, [Expose::Http]),
+    static function (Context $context, JsonObject $request): Result {
+        $quantity = $request['quantity'];
+        if (!is_int($quantity) || $quantity <= 0) {
+            return Result::fail(Error::validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid', ['quantity' => $quantity]));
+        }
+
+        return Result::ok(['id' => 'o-' . $context->correlation(), 'quantity' => $quantity]);
+    },
+);
+
+$pipeline = (new PipelineBuilder())->useAt(
+    new ClosureMiddleware('Observe', static fn (Context $context, \Closure $next): Result => $next($context)),
+    PipelineStage::Observe,
+);
+$invoker = new Invoker($registry, $pipeline);
+
+$context = Context::create(timeout: 2.0, baggage: [BaggageKeys::CORRELATION => 'c1']);
+$response = $invoker->invoke($context, new Request('orders.create', '{"quantity":2}'));
+// $response->outcome->isOk() is true and $response->payload is {"id":"o-c1","quantity":2}
+```
+
+Recoverable failures are returned as `Result` / `Error`, not thrown. By default a request is read into a `JsonObject` by the value model; typed requests are declared with `Codec::typed()` and `Shape`. A line-by-line walkthrough and writing a plugin that runs in the .NET host are covered on the [PHP SDK page](https://framework.docs.xihanfun.com/sdks/php) and by the example plugin [`examples/echo`](./examples/echo).
 
 ## Documentation
 
@@ -76,7 +109,7 @@ The documentation site is in Chinese.
 
 ## Status
 
-Experimental (there is a prerelease pinned to a spec rc tag; Stable also needs a release pinned to a formal spec tag): primitives, manifests, the invocation context, the pipeline, operations and the out-of-process plugin runtime are usable. Per RFC-0024 it claims the `core` and `plugin` conformance profiles with no gaps, and the pinned spec version is the commit of the `spec/` submodule. Details are on the [PHP SDK page](https://framework.docs.xihanfun.com/sdks/php).
+Experimental (there is a prerelease pinned to a spec rc tag; Stable also needs a release pinned to a formal spec tag): primitives, manifests, the invocation context, the pipeline, operations and the out-of-process plugin runtime are usable. Per RFC-0024 it claims the `core` and `plugin` conformance profiles with no gaps, and the pinned spec version is the commit of the `spec/` submodule: the tests replay the spec's conformance vectors directly, and the example plugin [`examples/echo`](./examples/echo) passes every case of the spec's black-box runner (`xihan-conformance plugin` in `spec/conformance`). Details are on the [PHP SDK page](https://framework.docs.xihanfun.com/sdks/php).
 
 ## Ecosystem
 

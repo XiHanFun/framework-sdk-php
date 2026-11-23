@@ -94,6 +94,7 @@ final class Registry implements \Countable
     /**
      * 返回已登记的操作数。
      */
+    #[\Override]
     public function count(): int
     {
         return count($this->descriptors);

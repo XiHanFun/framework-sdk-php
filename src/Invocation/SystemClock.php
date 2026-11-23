@@ -12,6 +12,7 @@ final readonly class SystemClock implements Clock
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function now(): \DateTimeImmutable
     {
         return new \DateTimeImmutable('now', new \DateTimeZone('UTC'));

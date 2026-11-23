@@ -43,6 +43,7 @@ final class ConfigurationException extends \LogicException implements FrameworkE
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function errorCode(): string
     {
         return $this->errorCode;
@@ -53,6 +54,7 @@ final class ConfigurationException extends \LogicException implements FrameworkE
      *
      * 以 fromError() 创建的交回原来的错误（保留消息键与参数，接收方可再翻译）。
      */
+    #[\Override]
     public function toError(): Error
     {
         return $this->error ?? Error::literal(

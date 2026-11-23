@@ -23,8 +23,20 @@ final class JsonText
     /** 最大嵌套层数，最外层的对象或数组是第 1 层。 */
     public const int MAX_DEPTH = 64;
 
+    /** UTF-8 的 BOM：check() 把它当作语法错误，读文件与清单原文的入口先用 stripBom() 去掉。 */
+    public const string UTF8_BOM = "\xEF\xBB\xBF";
+
     private function __construct()
     {
+    }
+
+    /**
+     * 去掉开头的一个 UTF-8 BOM，没有时原样返回：清单文件（RFC-0002 解析规则 2）与握手发出的清单原文
+     * （handshake.md §3 第 3 条）先去掉它再检查，文本里别处的 BOM 照常是语法错误。
+     */
+    public static function stripBom(string $text): string
+    {
+        return str_starts_with($text, self::UTF8_BOM) ? substr($text, strlen(self::UTF8_BOM)) : $text;
     }
 
     /**

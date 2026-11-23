@@ -7,7 +7,8 @@ declare(strict_types=1);
  *
  * 用法：php scripts/generate-plugin-protocol.php [protoc 的路径]，缺省用 PATH 里的 protoc。
  * protoc 的版本必须是下面的 $protocVersion：生成代码与 composer.json 里 google/protobuf 的运行时同属一个发布，
- * 换版本时两处一起改。规范文件不带 PHP 的命名空间选项，这里在临时副本里补上 php_namespace 与
+ * 换版本时两处一起改，.github/workflows/ci.yml 的 PROTOC_VERSION（protocol 作业装的 protoc）也一起改。
+ * 规范文件不带 PHP 的命名空间选项，这里在临时副本里补上 php_namespace 与
  * php_metadata_namespace，生成的类落在本包的命名空间下，不占用全局的 GPBMetadata 与 Xihan 命名空间。
  */
 

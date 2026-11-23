@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Operation;
 
+use XiHan\Framework\Primitives\Internal\Lists;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\OperationId;
 use XiHan\Framework\Primitives\Stability;
@@ -27,7 +28,8 @@ final readonly class Contract
      * @param string|null $permission 权限码；与 policy 二选一
      * @param string|null $policy 策略名；与 permission 二选一
      *
-     * @throws InvalidArgumentException ID 不合法、权限码与策略同时给出或为空串（PRIMITIVES_VALIDATION_001）
+     * @throws InvalidArgumentException ID 不合法、权限码与策略同时给出或为空串、暴露的协议不是 Expose 的列表
+     *     （PRIMITIVES_VALIDATION_001）
      */
     public function __construct(
         public string $id,
@@ -49,26 +51,7 @@ final readonly class Contract
                 sprintf("The permission or policy of the operation '%s' must not be empty; use null for none.", $id),
             );
         }
-        $this->expose = self::checkedExpose($id, $expose);
-    }
-
-    /**
-     * @param array<array-key, mixed> $expose
-     *
-     * @return list<Expose>
-     */
-    private static function checkedExpose(string $id, array $expose): array
-    {
-        $checked = [];
-        foreach ($expose as $index => $protocol) {
-            if ($index !== count($checked) || !$protocol instanceof Expose) {
-                throw new InvalidArgumentException(
-                    sprintf("The exposure of the operation '%s' must be a list of %s.", $id, Expose::class),
-                );
-            }
-            $checked[] = $protocol;
-        }
-
-        return $checked;
+        // 调用方不一定经过静态检查，运行期也核对暴露列表的类型
+        $this->expose = Lists::of(Expose::class, $expose, sprintf("The exposure of the operation '%s'", $id));
     }
 }

@@ -1,7 +1,8 @@
 name: CI
 
-# PHP SDK 的门禁：格式检查（PSR-12）、静态检查（PHPStan 最高级别）与全部测试（含读取规范一致性向量的测试，以及用规范的
-# 黑盒运行器验证示例插件的一致性测试，它需要 Go）；另核对插件协议的生成代码与 spec/plugin/plugin.proto 一致。
+# PHP SDK 的门禁：composer.json 校验、格式检查（PSR-12）与静态检查（PHPStan 最高级别）只在 ubuntu 上跑一遍；全部测试
+# （含读取规范一致性向量的测试，以及用规范的黑盒运行器验证示例插件的一致性测试，它需要 Go）在 ubuntu 与 windows 上跑；
+# 另核对插件协议的生成代码与 spec/plugin/plugin.proto 一致。
 on:
   push:
     branches: [main, dev]
@@ -17,8 +18,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  static:
+    name: 静态检查（PHP ${{ matrix.php }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.3', '8.4']
+    runs-on: ubuntu-latest
+    steps:
+      # 格式与静态检查的范围是 src、tests、examples、scripts，不读规范 submodule
+      - name: 检出
+        uses: actions/checkout@v5
+
+      - name: 安装 PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: json, mbstring, openssl
+          tools: composer:v2
+          coverage: none
+
+      - name: 校验 composer.json
+        run: composer validate --strict
+
+      - name: 安装依赖
+        run: composer install --no-interaction --no-progress --prefer-dist
+
+      - name: 格式检查
+        run: composer lint
+
+      - name: 静态检查
+        run: composer analyse
+
   test:
-    name: 构建与测试（PHP ${{ matrix.php }}，${{ matrix.os }}）
+    name: 测试（PHP ${{ matrix.php }}，${{ matrix.os }}）
     strategy:
       fail-fast: false
       matrix:
@@ -41,19 +74,13 @@ jobs:
 
       # 一致性测试以 go run 从子模块运行黑盒运行器；没有 Go 时测试会失败，CI 必须装上
       - name: 安装 Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: spec/conformance/go.mod
           cache-dependency-path: spec/conformance/go.sum
 
       - name: 安装依赖
         run: composer install --no-interaction --no-progress --prefer-dist
-
-      - name: 格式检查
-        run: composer lint
-
-      - name: 静态检查
-        run: composer analyse
 
       - name: 测试
         run: composer test
@@ -62,7 +89,8 @@ jobs:
     name: 协议代码与 plugin.proto 一致
     runs-on: ubuntu-latest
     env:
-      # 与 scripts/generate-plugin-protocol.php 里的版本一致
+      # 必须等于 scripts/generate-plugin-protocol.php 的 $protocVersion（脚本核对 protoc --version，不等即失败）；
+      # 换版本时两处与 composer.json 的 google/protobuf 一起改
       PROTOC_VERSION: '36.2'
     steps:
       - name: 检出（含规范 submodule）

@@ -19,6 +19,7 @@ use XiHan\Framework\Manifest\Role;
 use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\KernelErrors;
 use XiHan\Framework\Primitives\PipelineStage;
 use XiHan\Framework\Primitives\Stability;
 use XiHan\Framework\Tests\Vectors;
@@ -297,6 +298,58 @@ final class ManifestTest extends TestCase
         self::assertSame(['path' => $path], $exception->toError()->details);
         self::assertSame(sprintf("Manifest file '%s' does not exist.", $path), $exception->getMessage());
     }
+
+    public function testTryReadReportsFailuresAsResults(): void
+    {
+        $manifest = Manifest::tryRead(self::ECHO_MANIFEST)->valueOrThrow();
+        self::assertSame('xihan.samples.echo', $manifest->id);
+        self::assertSame(Manifest::read(self::ECHO_MANIFEST)->toJson(), $manifest->toJson());
+
+        // 抛异常的入口是薄包装：异常带的错误就是 tryRead() 的错误，四种失败各一例（不是 JSON、null、不合 Schema、跨字段约束）
+        $keys = [
+            '{' => 'kernel.manifest.invalid_json',
+            'null' => 'kernel.manifest.empty',
+            '{"id":5}' => 'kernel.manifest.invalid',
+            sprintf(self::MINIMAL, '"plugin"') => 'primitives.manifest.isolation_required',
+        ];
+        foreach ($keys as $json => $key) {
+            $error = Manifest::tryRead($json)->error();
+            self::assertNotNull($error, $json);
+            self::assertSame(KernelErrors::INVALID_MANIFEST, $error->code, $json);
+            self::assertSame($key, $error->messageKey, $json);
+            $exception = self::rejection($json);
+            self::assertEquals($error, $exception->toError(), $json);
+            self::assertSame($error->message(), $exception->getMessage(), $json);
+        }
+        self::assertSame(['id' => 'xihan.a.b'], Manifest::tryRead(sprintf(self::MINIMAL, '"plugin"'))->error()?->details);
+        self::assertSame(['reason' => '$.id'], Manifest::tryRead('{"id":5}')->error()?->details);
+    }
+
+    public function testTryReadFile(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'xihan-manifest-');
+        self::assertIsString($path);
+        try {
+            // tryReadFile 跳过开头的 UTF-8 BOM，tryRead 不跳过（RFC-0002 解析规则 2）
+            file_put_contents($path, "\xEF\xBB\xBF" . self::ECHO_MANIFEST);
+            self::assertSame('xihan.samples.echo', Manifest::tryReadFile($path)->valueOrThrow()->id);
+            self::assertSame('kernel.manifest.invalid_json', Manifest::tryRead("\xEF\xBB\xBF" . self::ECHO_MANIFEST)->error()?->messageKey);
+            file_put_contents($path, "{\"id\":\"\xff\"}");
+            self::assertSame('kernel.manifest.invalid_json', Manifest::tryReadFile($path)->error()?->messageKey);
+        } finally {
+            unlink($path);
+        }
+        $error = Manifest::tryReadFile($path)->error();
+        self::assertNotNull($error);
+        self::assertSame(KernelErrors::INVALID_MANIFEST, $error->code);
+        self::assertSame('kernel.manifest.file_missing', $error->messageKey);
+        self::assertSame(['path' => $path], $error->details);
+        self::assertSame(sprintf("Manifest file '%s' does not exist.", $path), $error->message());
+        self::assertEquals($error, self::fileRejection($path)->toError(), 'readFile throws the same error');
+        // 目录不是清单文件
+        self::assertSame('kernel.manifest.file_missing', Manifest::tryReadFile(sys_get_temp_dir())->error()?->messageKey);
+    }
+
     private static function assertRejected(string $json, string $name): void
     {
         $exception = self::rejection($json);

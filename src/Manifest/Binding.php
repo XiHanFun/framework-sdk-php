@@ -51,6 +51,7 @@ final readonly class Binding implements \JsonSerializable
      *
      * @return array{name: string, type: string, required: bool}
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         return ['name' => $this->name, 'type' => $this->type, 'required' => $this->isRequired()];

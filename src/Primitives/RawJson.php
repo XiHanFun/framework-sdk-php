@@ -59,6 +59,7 @@ final readonly class RawJson implements \JsonSerializable
     /**
      * 自己用 json_encode 写出时取解码后的值；SDK 的写出（toJson、响应编码）原样放回 `json`，不经过这里。
      */
+    #[\Override]
     public function jsonSerialize(): mixed
     {
         return $this->decode();

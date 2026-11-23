@@ -378,6 +378,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handlePong(string $data): void
     {
     }
@@ -385,6 +386,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handlePing(string $data): void
     {
         $this->writeFrame($data, Http2Parser::PING, Http2Parser::ACK);
@@ -393,6 +395,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handleShutdown(int $lastId, int $error, string $message): void
     {
         $this->goingAway = true;
@@ -415,6 +418,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handleStreamWindowIncrement(int $streamId, int $windowSize): void
     {
         $stream = $this->streams[$streamId] ?? null;
@@ -431,6 +435,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handleConnectionWindowIncrement(int $windowSize): void
     {
         if ($this->sendWindow + $windowSize > self::MAX_WINDOW) {
@@ -446,6 +451,7 @@ final class Http2Connection implements Http2Processor
      * @param array<string, string> $pseudo
      * @param array<string, list<string>> $headers
      */
+    #[\Override]
     public function handleHeaders(int $streamId, array $pseudo, array $headers, bool $streamEnded): void
     {
         $stream = $this->streams[$streamId] ?? null;
@@ -483,6 +489,7 @@ final class Http2Connection implements Http2Processor
      * @param array<string, string> $pseudo
      * @param array<string, list<string>> $headers
      */
+    #[\Override]
     public function handlePushPromise(int $streamId, int $pushId, array $pseudo, array $headers): void
     {
         throw new Http2ConnectionException('Server push is not enabled', Http2Parser::PROTOCOL_ERROR);
@@ -491,6 +498,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handlePriority(int $streamId, int $parentId, int $weight): void
     {
     }
@@ -498,6 +506,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handleStreamReset(int $streamId, int $errorCode): void
     {
         $stream = $this->streams[$streamId] ?? null;
@@ -524,6 +533,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handleStreamException(Http2StreamException $exception): void
     {
         $streamId = $exception->getStreamId();
@@ -540,6 +550,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handleConnectionException(Http2ConnectionException $exception): void
     {
         try {
@@ -556,6 +567,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handleData(int $streamId, string $data): void
     {
         $length = strlen($data);
@@ -584,6 +596,7 @@ final class Http2Connection implements Http2Processor
      *
      * @param array<int, int> $settings
      */
+    #[\Override]
     public function handleSettings(array $settings): void
     {
         foreach ($settings as $key => $value) {
@@ -620,6 +633,7 @@ final class Http2Connection implements Http2Processor
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function handleStreamEnd(int $streamId): void
     {
         $stream = $this->streams[$streamId] ?? null;

@@ -13,9 +13,10 @@ use XiHan\Framework\Invocation\TraceParent;
 use XiHan\Framework\Primitives\BaggageKeys;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\KernelErrors;
 
 /**
- * 调用上下文：追踪、Baggage、对象袋、截止时间与取消的翻译。
+ * 调用上下文：追踪、Baggage、对象袋、截止时间与取消的翻译，以及取消、截止时间的派生。
  */
 final class ContextTest extends TestCase
 {
@@ -268,5 +269,170 @@ final class ContextTest extends TestCase
         self::assertSame('2026-11-16T00:00:00+00:00', $context->deadline()?->format(DATE_ATOM));
         self::assertSame(1.0, $context->remainingTime(new \DateTimeImmutable('2026-11-15T23:59:59Z')));
         self::assertFalse($context->cancellation()->isRequested());
+    }
+
+    public function testWithCancellationLinksAnotherToken(): void
+    {
+        $outer = new CancellationSource();
+        $context = Context::create(cancellation: $outer->cancellation(), baggage: [BaggageKeys::TENANT => 't1']);
+        $inner = new CancellationSource();
+        $derived = $context->withCancellation($inner->cancellation());
+        self::assertFalse($derived->isCancelled());
+        self::assertNull($derived->cancellationError());
+        // 其余照旧：追踪、Baggage、截止时间、时钟与对象袋
+        self::assertSame($context->traceParent(), $derived->traceParent());
+        self::assertSame('t1', $derived->tenant());
+        self::assertNull($derived->deadline());
+        self::assertSame($context->clock(), $derived->clock());
+        self::assertSame($context->items(), $derived->items());
+
+        $fired = [];
+        $derived->cancellation()->subscribe(static function (CancellationReason $reason) use (&$fired): void {
+            $fired[] = $reason;
+        });
+        // 取消派生上下文不影响源上下文
+        $inner->cancel();
+        self::assertTrue($derived->isCancelled());
+        self::assertSame([CancellationReason::Cancelled], $fired);
+        self::assertSame(KernelErrors::CANCELLED, $derived->cancellationError()?->code);
+        self::assertFalse($context->isCancelled(), 'cancelling a derived context leaves its source alone');
+
+        // 源上下文取消，派生上下文连带取消
+        $downstream = $context->withCancellation((new CancellationSource())->cancellation());
+        self::assertFalse($downstream->isCancelled());
+        $outer->cancel();
+        self::assertTrue($context->isCancelled());
+        self::assertTrue($downstream->isCancelled());
+        self::assertSame(CancellationReason::Cancelled, $downstream->cancellation()->reason());
+
+        // 从已经取消的上下文派生，或给一个已经取消的令牌：派生出来就已取消
+        self::assertTrue($context->withCancellation((new CancellationSource())->cancellation())->isCancelled());
+        self::assertTrue(Context::create()->withCancellation($inner->cancellation())->isCancelled());
+    }
+
+    public function testWithCancellationKeepsTheDeadlineAttribution(): void
+    {
+        // 截止时间已到但还没人轮询时另一个令牌取消：截止令牌那时已经触发，归为超时（RFC-0003 规则 1）
+        $clock = new ManualClock();
+        $context = Context::create(timeout: 1.0, clock: $clock);
+        $inner = new CancellationSource();
+        $derived = $context->withCancellation($inner->cancellation());
+        self::assertEquals($context->deadline(), $derived->deadline());
+        $clock->advance(1000);
+        $inner->cancel();
+        self::assertSame(CancellationReason::DeadlineExceeded, $derived->cancellation()->reason());
+        self::assertSame(KernelErrors::DEADLINE_EXCEEDED, $derived->cancellationError()?->code);
+
+        // 截止时间之前取消：之后时钟越过截止时间也仍是取消；源上下文到点才超时
+        $clock = new ManualClock();
+        $context = Context::create(timeout: 1.0, clock: $clock);
+        $inner = new CancellationSource();
+        $derived = $context->withCancellation($inner->cancellation());
+        $inner->cancel();
+        $clock->advance(2000);
+        self::assertSame(CancellationReason::Cancelled, $derived->cancellation()->reason());
+        self::assertSame(CancellationReason::DeadlineExceeded, $context->cancellation()->reason());
+
+        // 谁也没取消：到了截止时间派生上下文同样超时，登记的回调在轮询时执行
+        $clock = new ManualClock();
+        $derived = Context::create(timeout: 1.0, clock: $clock)->withCancellation((new CancellationSource())->cancellation());
+        $fired = [];
+        $derived->cancellation()->subscribe(static function (CancellationReason $reason) use (&$fired): void {
+            $fired[] = $reason;
+        });
+        self::assertFalse($derived->isCancelled());
+        $clock->advance(1000);
+        self::assertTrue($derived->isCancelled());
+        self::assertSame([CancellationReason::DeadlineExceeded], $fired);
+    }
+
+    public function testDerivedTokensUnsubscribeWhenReleased(): void
+    {
+        $spy = new SpyCancellation(new CancellationSource());
+        $extra = new SpyCancellation(new CancellationSource());
+        $context = Context::create(cancellation: $spy);
+        self::assertSame(0, $spy->subscriptions);
+        $derived = $context->withCancellation($extra);
+        self::assertSame(1, $spy->subscriptions);
+        self::assertSame(1, $extra->subscriptions);
+        $bounded = $derived->withDeadline(new \DateTimeImmutable('+1 hour'));
+        unset($derived, $bounded);
+        gc_collect_cycles();
+        self::assertSame(0, $spy->subscriptions, 'a derived token unsubscribes from the source token when released');
+        self::assertSame(0, $extra->subscriptions, 'a derived token unsubscribes from the linked token when released');
+    }
+
+    public function testWithDeadlineOnlyTightensTheDeadline(): void
+    {
+        $clock = new ManualClock('2026-11-16T00:00:00Z');
+        $context = Context::create(timeout: 10.0, clock: $clock);
+        $tighter = $context->withDeadline(new \DateTimeImmutable('2026-11-16T08:00:02+08:00'));
+        self::assertSame('2026-11-16T00:00:02+00:00', $tighter->deadline()?->format(DATE_ATOM), 'deadlines are kept in UTC');
+        self::assertSame(2.0, $tighter->remainingTime($clock->now()));
+        self::assertSame(10.0, $context->remainingTime($clock->now()), 'the source context keeps its deadline');
+        self::assertSame($context->traceParent(), $tighter->traceParent());
+        self::assertSame($context->items(), $tighter->items());
+
+        // 下游的截止时间不得晚于上游（RFC-0003 规则 2）：给得更晚或一样时保持原来的
+        $later = $context->withDeadline(new \DateTimeImmutable('2026-11-16T00:01:00Z'));
+        self::assertEquals($context->deadline(), $later->deadline());
+        self::assertEquals($context->deadline(), $context->withDeadline(new \DateTimeImmutable('2026-11-16T00:00:10Z'))->deadline());
+
+        $clock->advance(2000);
+        self::assertTrue($tighter->isCancelled());
+        self::assertSame(CancellationReason::DeadlineExceeded, $tighter->cancellation()->reason());
+        self::assertSame(KernelErrors::DEADLINE_EXCEEDED, $tighter->cancellationError()?->code);
+        self::assertTrue($tighter->isExpired($clock->now()));
+        self::assertFalse($context->isCancelled(), 'a derived deadline does not cancel its source');
+        self::assertFalse($later->isCancelled());
+        $clock->advance(8000);
+        self::assertTrue($context->isCancelled());
+        self::assertSame(CancellationReason::DeadlineExceeded, $later->cancellation()->reason());
+
+        // 没有截止时间的上下文派生出截止时间；源上下文的取消连带取消，截止时间之前是取消
+        $source = new CancellationSource();
+        $background = Context::create(cancellation: $source->cancellation(), clock: $clock);
+        $bounded = $background->withDeadline($clock->now()->add(new \DateInterval('PT5S')));
+        self::assertTrue($bounded->hasDeadline());
+        self::assertFalse($background->hasDeadline());
+        self::assertFalse($bounded->isCancelled());
+        $source->cancel();
+        self::assertSame(CancellationReason::Cancelled, $bounded->cancellation()->reason());
+
+        // 已经到了的截止时间：派生出来就已超时
+        $expired = Context::create(clock: $clock)->withDeadline($clock->now());
+        self::assertSame(CancellationReason::DeadlineExceeded, $expired->cancellation()->reason());
+        self::assertSame(0.0, $expired->remainingTime($clock->now()));
+    }
+
+    public function testSampledTellsWhetherAnUpstreamDecided(): void
+    {
+        // 链路的根：没有上游的采样决定（RFC-0003 规则 7），写出时按已采样
+        $root = Context::create();
+        self::assertNull($root->sampled());
+        self::assertTrue($root->isSampled());
+        self::assertStringEndsWith('-01', $root->traceParent());
+
+        $sampled = Context::create(traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01');
+        self::assertTrue($sampled->sampled());
+        self::assertTrue($sampled->isSampled());
+        $unsampled = Context::create(traceParent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00');
+        self::assertFalse($unsampled->sampled());
+        self::assertFalse($unsampled->isSampled());
+        self::assertStringEndsWith('-00', $unsampled->traceParent());
+
+        // 只给追踪 ID 的创建方按上游已采样处理；只给 Span ID 时追踪是新生成的，仍是链路的根
+        self::assertTrue(Context::create(traceId: '0af7651916cd43dd8448eb211c80319c')->sampled());
+        self::assertNull(Context::create(spanId: 'b7ad6b7169203331')->sampled());
+        // 不合法的 traceparent 当作没有给出
+        self::assertNull(Context::create(traceParent: 'ff-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01')->sampled());
+
+        // 派生上下文带着同一个决定
+        self::assertNull($root->withBaggage(BaggageKeys::CORRELATION, 'c1')->sampled());
+        self::assertFalse($unsampled->withBaggage(BaggageKeys::CORRELATION, 'c1')->sampled());
+        self::assertFalse($unsampled->withoutUnregisteredBaggage()->sampled());
+        self::assertFalse($unsampled->withCancellation((new CancellationSource())->cancellation())->sampled());
+        self::assertFalse($unsampled->withDeadline(new \DateTimeImmutable('+1 hour'))->sampled());
+        self::assertStringEndsWith('-00', $unsampled->withDeadline(new \DateTimeImmutable('+1 hour'))->traceParent());
     }
 }

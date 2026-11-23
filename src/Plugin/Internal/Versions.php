@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Plugin\Internal;
 
+use XiHan\Framework\Plugin\Runtime;
+
 /**
  * 协议版本的协商（handshake.md §3 第 1 条，向量 conformance/vectors/plugin/protocol-versions.json）。
  *
@@ -12,7 +14,7 @@ namespace XiHan\Framework\Plugin\Internal;
 final class Versions
 {
     /** 本 SDK 支持的协议版本 */
-    public const array SUPPORTED = [1];
+    public const array SUPPORTED = [Runtime::PROTOCOL_VERSION];
 
     private function __construct()
     {

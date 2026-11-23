@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Operation;
 
 use XiHan\Framework\Primitives\Internal\JsonNode;
+use XiHan\Framework\Primitives\Internal\JsonReader;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonPath;
 use XiHan\Framework\Primitives\RawJson;
@@ -28,6 +29,10 @@ use XiHan\Framework\Primitives\RawJson;
  * （`1e400`、超出双精度的整数与 `2.0` 写回时不变，decode() 取解码后的值）；接受 null 的值为 null 时就是 null。
  *
  * 载荷按 JsonReader 读，不经 stdClass：以 U+0000 开头的成员名照常核对。
+ *
+ * 插件的配置节也按形状读（Plugin\Configuration::decode()，lifecycle.md §7.2），规则只多三条：对象的成员名按 ASCII
+ * 不区分大小写对上声明的成员；字符串叶子读成数字时按 JSON 数字的文法；读成布尔时只认 `true`、`false`（ASCII 不区分
+ * 大小写）。其余照上面的规则。
  */
 final readonly class Shape
 {
@@ -171,17 +176,22 @@ final readonly class Shape
     /**
      * 按形状核对 JsonReader 读出的值，核对过的值写进 `$out`。
      *
-     * @internal 由 Codec 调用。
+     * @internal 由 Codec 与 Plugin\Configuration 调用。
      *
      * @param string $text 载荷原文：任意 JSON 按原文保留
+     * @param bool $configuration 按配置节的读法（lifecycle.md §7.2）：成员名按 ASCII 不区分大小写，字符串叶子可以读成
+     *     数字与布尔
      *
      * @return string|null 第一处问题的路径；合形状时为 null
      */
-    public function read(JsonNode $node, string $path, string $text, mixed &$out): ?string
+    public function read(JsonNode $node, string $path, string $text, mixed &$out, bool $configuration = false): ?string
     {
         $out = null;
         if ($node->kind === JsonNode::NULL) {
             return $this->nullable || in_array($this->kind, self::NULLABLE_KINDS, true) ? null : $path;
+        }
+        if ($configuration && is_string($node->value)) {
+            $node = $this->configurationLeaf($node, $node->value);
         }
         $value = $node->value;
 
@@ -195,17 +205,47 @@ final readonly class Shape
             self::BOOL => is_bool($value) ? self::accept($value, $out) : $path,
             // 任意 JSON 原样保留读到的原文：1e400、超出双精度的整数与 2.0 写回时不变（ADR-0236）
             self::ANY => self::accept(RawJson::checked($node->raw($text)), $out),
-            self::LIST => $node->kind === JsonNode::ARRAY ? $this->readList($node, $path, $text, $out) : $path,
-            self::MAP => $node->kind === JsonNode::OBJECT ? $this->readMap($node, $path, $text, $out) : $path,
-            default => $node->kind === JsonNode::OBJECT ? $this->readObject($node, $path, $text, $out) : $path,
+            self::LIST => $node->kind === JsonNode::ARRAY
+                ? $this->readList($node, $path, $text, $out, $configuration)
+                : $path,
+            self::MAP => $node->kind === JsonNode::OBJECT
+                ? $this->readMap($node, $path, $text, $out, $configuration)
+                : $path,
+            default => $node->kind === JsonNode::OBJECT
+                ? $this->readObject($node, $path, $text, $out, $configuration)
+                : $path,
         };
     }
 
-    private function readList(JsonNode $node, string $path, string $text, mixed &$out): ?string
+    /**
+     * 配置节的字符串叶子（lifecycle.md §7.2）：宿主写出的叶子一律是 JSON 字符串。目标是数字且文本合 JSON 数字的文法时
+     * 换成那个数字，目标是布尔且文本是 true 或 false（ASCII 不区分大小写）时换成布尔；其余原样，照常规读法核对。
+     */
+    private function configurationLeaf(JsonNode $node, string $leaf): JsonNode
+    {
+        if (in_array($this->kind, [self::INT32, self::INT64, self::FLOAT], true) && JsonReader::isNumber($leaf)) {
+            // 当作同一段文本的 JSON 数字读：整数写法是 int，带小数点或指数、超出 64 位的是 float，整数的形状照常不接受
+            return JsonReader::parse($leaf);
+        }
+        if ($this->kind === self::BOOL) {
+            // strcasecmp 自 PHP 8.2 起与区域设置无关，只折叠 ASCII 字母
+            $flag = match (true) {
+                strcasecmp($leaf, 'true') === 0 => true,
+                strcasecmp($leaf, 'false') === 0 => false,
+                default => null,
+            };
+
+            return $flag === null ? $node : new JsonNode(JsonNode::BOOL, $flag, $node->start, $node->end);
+        }
+
+        return $node;
+    }
+
+    private function readList(JsonNode $node, string $path, string $text, mixed &$out, bool $configuration): ?string
     {
         $items = [];
         foreach ($node->items() as $index => $item) {
-            $problem = $this->itemShape()->read($item, JsonPath::index($path, $index), $text, $read);
+            $problem = $this->itemShape()->read($item, JsonPath::index($path, $index), $text, $read, $configuration);
             if ($problem !== null) {
                 return $problem;
             }
@@ -216,11 +256,12 @@ final readonly class Shape
         return null;
     }
 
-    private function readMap(JsonNode $node, string $path, string $text, mixed &$out): ?string
+    private function readMap(JsonNode $node, string $path, string $text, mixed &$out, bool $configuration): ?string
     {
         $members = [];
         foreach ($node->members() as [$name, $item]) {
-            $problem = $this->itemShape()->read($item, JsonPath::member($path, $name), $text, $read);
+            // 字典的键不是成员名：配置节的读法也原样保留
+            $problem = $this->itemShape()->read($item, JsonPath::member($path, $name), $text, $read, $configuration);
             if ($problem !== null) {
                 return $problem;
             }
@@ -231,19 +272,22 @@ final readonly class Shape
         return null;
     }
 
-    private function readObject(JsonNode $node, string $path, string $text, mixed &$out): ?string
+    private function readObject(JsonNode $node, string $path, string $text, mixed &$out, bool $configuration): ?string
     {
         $members = [];
-        foreach ($node->members() as [$name, $item]) {
-            $member = $this->members[$name] ?? null;
-            if ($member === null) {
+        $matched = $configuration ? $this->matchedMembers($node) : null;
+        foreach ($node->members() as $index => [$name, $item]) {
+            // 成员名区分大小写；配置节的读法先按名字对上声明的成员，路径仍照文本里的写法
+            $declared = $matched === null ? $name : ($matched[$index] ?? null);
+            if ($declared === null || !isset($this->members[$declared])) {
                 continue;
             }
-            $problem = $member->read($item, JsonPath::member($path, $name), $text, $read);
+            $memberPath = JsonPath::member($path, $name);
+            $problem = $this->members[$declared]->read($item, $memberPath, $text, $read, $configuration);
             if ($problem !== null) {
                 return $problem;
             }
-            $members[$name] = $read;
+            $members[$declared] = $read;
         }
         // 缺少的必填成员在对象的成员都读完后才发现，报所在对象的路径
         foreach ($this->members as $name => $member) {
@@ -254,6 +298,40 @@ final readonly class Shape
         $out = $members;
 
         return null;
+    }
+
+    /**
+     * 配置节的成员名匹配（lifecycle.md §7.2，与 IConfiguration 一致）：每个声明的成员取逐字同名的文本成员，没有时取文本里
+     * 靠前的、只差 ASCII 大小写的那个；一个文本成员只对上一个声明的成员。
+     *
+     * @return array<int, string> 文本成员的下标 → 声明的成员名；没对上的文本成员不在其中，照未知成员忽略
+     */
+    private function matchedMembers(JsonNode $node): array
+    {
+        $names = array_map(static fn (array $member): string => $member[0], $node->members());
+        $matched = [];
+        $unmatched = [];
+        foreach (array_keys($this->members) as $declared) {
+            // PHP 把纯数字的成员名存成整数键
+            $declared = (string) $declared;
+            $index = array_search($declared, $names, true);
+            if ($index === false) {
+                $unmatched[] = $declared;
+            } else {
+                $matched[$index] = $declared;
+            }
+        }
+        foreach ($unmatched as $declared) {
+            foreach ($names as $index => $name) {
+                // strcasecmp 自 PHP 8.2 起与区域设置无关，只折叠 ASCII 字母
+                if (!isset($matched[$index]) && strcasecmp($name, $declared) === 0) {
+                    $matched[$index] = $declared;
+                    break;
+                }
+            }
+        }
+
+        return $matched;
     }
 
     private function itemShape(): self

@@ -52,6 +52,7 @@ use XiHan\Framework\Manifest\Manifest;
 use XiHan\Framework\Primitives\{Error, Result};
 
 $manifest = Manifest::readFile(__DIR__ . '/xihan.manifest.json'); // 不合法抛 ConfigurationException（KERNEL_CAPABILITY_006）
+$read = Manifest::tryReadFile(__DIR__ . '/xihan.manifest.json');  // 不抛异常：Result<Manifest>，失败的原因在 $read->error()
 echo $manifest->toJson();                                         // 按 RFC-0002「写出」排版，各语言逐字相同
 
 echo Result::fail(Error::literal('ORDERS_CONFLICT_001', 'stale'))->toJson();
@@ -61,7 +62,39 @@ $done = Result::unitFromJson('{"ok":true}');                       // 无值结�
 $found = Result::maybeFromJson('{"ok":true,"value":null}');        // 值类型为 Maybe 的结果，null 即无值
 ```
 
-操作与管道的用法、写一个插件见 [PHP SDK 文档页](https://framework.docs.xihanfun.com/sdks/php)。
+操作、管道与调用器：
+
+```php
+use XiHan\Framework\Invocation\Context;
+use XiHan\Framework\Operation\{Contract, Expose, Invoker, Registry, Request};
+use XiHan\Framework\Pipeline\{ClosureMiddleware, PipelineBuilder};
+use XiHan\Framework\Primitives\{BaggageKeys, Error, JsonObject, PipelineStage, Result, Stability};
+
+$registry = new Registry();
+$registry->add(
+    new Contract('orders.create', Stability::Experimental, [Expose::Http]),
+    static function (Context $context, JsonObject $request): Result {
+        $quantity = $request['quantity'];
+        if (!is_int($quantity) || $quantity <= 0) {
+            return Result::fail(Error::validation('ORDERS_VALIDATION_001', 'orders.quantity.invalid', ['quantity' => $quantity]));
+        }
+
+        return Result::ok(['id' => 'o-' . $context->correlation(), 'quantity' => $quantity]);
+    },
+);
+
+$pipeline = (new PipelineBuilder())->useAt(
+    new ClosureMiddleware('Observe', static fn (Context $context, \Closure $next): Result => $next($context)),
+    PipelineStage::Observe,
+);
+$invoker = new Invoker($registry, $pipeline);
+
+$context = Context::create(timeout: 2.0, baggage: [BaggageKeys::CORRELATION => 'c1']);
+$response = $invoker->invoke($context, new Request('orders.create', '{"quantity":2}'));
+// $response->outcome->isOk() 为真，$response->payload 是 {"id":"o-c1","quantity":2}
+```
+
+可恢复失败返回 `Result` / `Error`，不抛异常。请求缺省按值模型读成 `JsonObject`，类型化的请求用 `Codec::typed()` 与 `Shape` 声明；逐条说明与写一个在 .NET 宿主里运行的插件见 [PHP SDK 文档页](https://framework.docs.xihanfun.com/sdks/php) 与示例插件 [`examples/echo`](./examples/echo)。
 
 ## 文档
 
@@ -74,7 +107,7 @@ $found = Result::maybeFromJson('{"ok":true,"value":null}');        // 值类型�
 
 ## 状态
 
-Experimental（已有钉在规范 rc 标签上的预发布版，到 Stable 还要钉在规范正式版标签上的发布版）：原语、清单、调用上下文、管道、操作与进程外插件运行时可用。按 RFC-0024 认领 `core` 与 `plugin` 两个一致性档，没有缺口，钉的规范版本是 `spec/` 子模块的提交。细节见 [PHP SDK 文档页](https://framework.docs.xihanfun.com/sdks/php)。
+Experimental（已有钉在规范 rc 标签上的预发布版，到 Stable 还要钉在规范正式版标签上的发布版）：原语、清单、调用上下文、管道、操作与进程外插件运行时可用。按 RFC-0024 认领 `core` 与 `plugin` 两个一致性档，没有缺口，钉的规范版本是 `spec/` 子模块的提交：测试直接回放规范的一致性向量，示例插件 [`examples/echo`](./examples/echo) 通过规范黑盒运行器（`spec/conformance` 里的 `xihan-conformance plugin`）的全部用例。细节见 [PHP SDK 文档页](https://framework.docs.xihanfun.com/sdks/php)。
 
 ## 生态
 

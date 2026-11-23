@@ -32,6 +32,7 @@ final readonly class ClosureMiddleware implements Middleware
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function name(): string
     {
         return $this->name;
@@ -40,6 +41,7 @@ final readonly class ClosureMiddleware implements Middleware
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function invoke(Context $context, \Closure $next): Result
     {
         return ($this->callback)($context, $next);

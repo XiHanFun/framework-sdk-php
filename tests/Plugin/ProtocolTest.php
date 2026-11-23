@@ -127,7 +127,9 @@ final class ProtocolTest extends TestCase
 
     public function testEnvelopesAndHealthAreEncoded(): void
     {
-        $proto = Protocol::toProtoEnvelope(new Envelope('echo.events', 'e1', 'urn:x', 'x', '{}', '', extensions: ['xihantenant' => 't1']));
+        // 承载租户的扩展属性名是公开常量（RFC-0009「信封」）
+        self::assertSame('xihantenant', Envelope::EXTENSION_TENANT);
+        $proto = Protocol::toProtoEnvelope(new Envelope('echo.events', 'e1', 'urn:x', 'x', '{}', '', extensions: [Envelope::EXTENSION_TENANT => 't1']));
         self::assertSame('1.0', $proto->getSpecVersion());
         self::assertSame('application/json', $proto->getDataContentType());
         $envelope = Protocol::envelope($proto);

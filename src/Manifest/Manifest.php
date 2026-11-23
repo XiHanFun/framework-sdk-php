@@ -16,6 +16,7 @@ use XiHan\Framework\Primitives\Internal\JsonReader;
 use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonPath;
+use XiHan\Framework\Primitives\KernelErrors;
 use XiHan\Framework\Primitives\KernelMessages;
 use XiHan\Framework\Primitives\PipelineStage;
 use XiHan\Framework\Primitives\Result;
@@ -26,7 +27,8 @@ use XiHan\Framework\Primitives\Unit;
  * 一份 `xihan.manifest.json`（RFC-0002，Schema 见 spec/manifest/manifest.schema.json）。
  *
  * 只做数据与格式校验，收集、解析与求解是宿主的职责。构造时核对单个字段的格式，字段之间的约束由 validate() 核对：
- * 插件必须声明隔离，非插件不得声明隔离或权限，提供、依赖与绑定不得重复。read() 两样都核对。
+ * 插件必须声明隔离，非插件不得声明隔离或权限，提供、依赖与绑定不得重复。读取两样都核对：tryRead() / tryReadFile() 把
+ * 失败作为 Result 返回（与 .NET 的 ManifestReader.Read 相同），read() / readFile() 是它们的薄包装，失败时抛出同一个错误。
  * 只有 Wasm 插件能贡献中间件，这一条由宿主在发现插件时核对（PLUGINS_VALIDATION_001），读取清单时不核对。
  */
 final readonly class Manifest implements \JsonSerializable
@@ -34,17 +36,18 @@ final readonly class Manifest implements \JsonSerializable
     /** 清单文件名。 */
     public const string FILE_NAME = 'xihan.manifest.json';
 
-    /** 清单读取失败的错误码（RFC-0002 解析规则 2）。 */
-    public const string ERROR_CODE_INVALID = 'KERNEL_CAPABILITY_006';
+    /**
+     * 清单读取失败的错误码（RFC-0002 解析规则 2）。
+     *
+     * @deprecated 改用 KernelErrors::INVALID_MANIFEST：内核错误码集中在 Primitives\KernelErrors。
+     */
+    public const string ERROR_CODE_INVALID = KernelErrors::INVALID_MANIFEST;
 
     /** 写出的 `$schema`。 */
     public const string SCHEMA_URI = 'https://spec.xihanfun.com/manifest/v1.json';
 
     /** 宿主启动时激活的事件 */
     private const string ON_STARTUP = 'onStartup';
-
-    /** UTF-8 的 BOM：readFile() 跳过它，read() 把它当作语法错误 */
-    private const string UTF8_BOM = "\xEF\xBB\xBF";
 
     /** 顶层允许的字段，按 Schema 顺序 */
     private const array FIELDS = [
@@ -122,62 +125,71 @@ final readonly class Manifest implements \JsonSerializable
      * 任何一层有重复成员时为第一处重复的路径）；根是 null 为 kernel.manifest.empty；不合 Schema 为
      * kernel.manifest.invalid（reason 为第一处问题的路径）；跨字段约束不合保留 validate() 的消息键与参数 id。
      *
-     * @throws ConfigurationException 清单不合法（KERNEL_CAPABILITY_006），toError() 是逐字的错误
+     * @return Result<self>
      */
-    public static function read(string $json): self
+    public static function tryRead(string $json): Result
     {
         $problem = JsonText::check($json);
         if ($problem !== null) {
-            throw self::invalid(KernelMessages::MANIFEST_INVALID_JSON, ['reason' => $problem->path]);
+            return Result::fail(self::invalid(KernelMessages::MANIFEST_INVALID_JSON, ['reason' => $problem->path]));
         }
         // 按 JsonReader 读出的树核对形状：以 U+0000 开头的成员名也按 Schema 之外的成员报出路径
         $root = JsonReader::parse($json);
         if ($root->kind === JsonNode::NULL) {
-            throw self::invalid(KernelMessages::MANIFEST_EMPTY, []);
+            return Result::fail(self::invalid(KernelMessages::MANIFEST_EMPTY, []));
         }
         $path = ManifestShape::findProblem($root);
         if ($path !== null) {
-            throw self::invalid(KernelMessages::MANIFEST_INVALID, ['reason' => $path]);
+            return Result::fail(self::invalid(KernelMessages::MANIFEST_INVALID, ['reason' => $path]));
         }
-        // 形状已核对：成员都是 Schema 里的，stdClass 放得下；读取与格式校验不会再失败，失败即两处规则不一致
+        // 形状已核对：成员都是 Schema 里的，stdClass 放得下；读取与格式校验不会再失败，失败即两处规则不一致，按缺陷抛出
         $manifest = self::fromFields(Fields::of(json_decode($json, false, 512, JSON_THROW_ON_ERROR), JsonPath::ROOT));
         $error = $manifest->validate()->error();
-        if ($error !== null) {
-            throw ConfigurationException::fromError($error->withCode(self::ERROR_CODE_INVALID));
-        }
 
-        return $manifest;
+        return $error === null
+            ? Result::ok($manifest)
+            : Result::fail($error->withCode(KernelErrors::INVALID_MANIFEST));
     }
 
     /**
-     * 读取清单文件：按 UTF-8 读，跳过开头的 UTF-8 BOM，其余同 read()。
+     * 读取清单文件：按 UTF-8 读，跳过开头的 UTF-8 BOM，其余同 tryRead()。
+     *
+     * 文件不存在或读不出为 KERNEL_CAPABILITY_006 + kernel.manifest.file_missing（参数 path）。
+     *
+     * @return Result<self>
+     *
+     * @phpstan-impure 结果随文件的内容变化
+     */
+    public static function tryReadFile(string $path): Result
+    {
+        return self::tryReadContents(self::contents($path), $path);
+    }
+
+    /**
+     * 读取 JSON 文本里的清单：tryRead() 的薄包装，失败时把它的错误作为异常抛出。
+     *
+     * @throws ConfigurationException 清单不合法（KERNEL_CAPABILITY_006），toError() 是逐字的错误
+     */
+    public static function read(string $json): self
+    {
+        return self::orThrow(self::tryRead($json));
+    }
+
+    /**
+     * 读取清单文件：与 tryReadFile() 同一条读取路径，失败时把它的错误作为异常抛出。
      *
      * @throws ConfigurationException 文件不存在（kernel.manifest.file_missing，参数 path）或清单不合法，都是
      *     KERNEL_CAPABILITY_006
      */
     public static function readFile(string $path): self
     {
-        $warning = null;
-        // 读文件失败时 PHP 发出警告而不是抛出：收下警告文本，作为异常的原因交给调用方
-        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
-            $warning = $message;
+        $json = self::contents($path, $warning);
 
-            return true;
-        });
-        try {
-            $json = is_file($path) ? file_get_contents($path) : false;
-        } finally {
-            restore_error_handler();
-        }
-        if ($json === false) {
-            throw self::invalid(
-                KernelMessages::MANIFEST_FILE_MISSING,
-                ['path' => $path],
-                is_string($warning) ? new \RuntimeException($warning) : null,
-            );
-        }
-
-        return self::read(str_starts_with($json, self::UTF8_BOM) ? substr($json, strlen(self::UTF8_BOM)) : $json);
+        // 读文件失败时 PHP 发出的警告文本作为异常的原因交给调用方
+        return self::orThrow(
+            self::tryReadContents($json, $path),
+            $json === null && $warning !== null ? new \RuntimeException($warning) : null,
+        );
     }
 
     /**
@@ -279,6 +291,7 @@ final readonly class Manifest implements \JsonSerializable
      *
      * @return array<string, mixed>
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         $wire = ['$schema' => self::SCHEMA_URI, 'id' => $this->id];
@@ -476,13 +489,63 @@ final readonly class Manifest implements \JsonSerializable
     }
 
     /**
-     * 清单读取失败：KERNEL_CAPABILITY_006。
+     * 读出文件的内容；不是文件或读不出时为 null，`$warning` 是 PHP 那时发出的警告文本（没有时为 null）。
+     */
+    private static function contents(string $path, ?string &$warning = null): ?string
+    {
+        $warning = null;
+        // 读文件失败时 PHP 发出警告而不是抛出：收下警告文本，不让它漏到调用方的错误处理器
+        set_error_handler(static function (int $severity, string $message) use (&$warning): bool {
+            $warning = $message;
+
+            return true;
+        });
+        try {
+            $json = is_file($path) ? file_get_contents($path) : false;
+        } finally {
+            restore_error_handler();
+        }
+
+        return $json === false ? null : $json;
+    }
+
+    /**
+     * 按读出的文件内容读清单：没有内容即文件不存在，有内容时跳过开头的 UTF-8 BOM 再读。
+     *
+     * @return Result<self>
+     */
+    private static function tryReadContents(?string $json, string $path): Result
+    {
+        return $json === null
+            ? Result::fail(self::invalid(KernelMessages::MANIFEST_FILE_MISSING, ['path' => $path]))
+            : self::tryRead(JsonText::stripBom($json));
+    }
+
+    /**
+     * 取出读到的清单；失败时把错误作为配置异常抛出（英文消息取 en-US 模板，toError() 交回同一个错误）。
+     *
+     * @param Result<self> $result
+     *
+     * @throws ConfigurationException
+     */
+    private static function orThrow(Result $result, ?\Throwable $previous = null): self
+    {
+        $error = $result->error();
+        if ($error !== null) {
+            throw ConfigurationException::fromError($error, $previous);
+        }
+
+        return $result->valueOrThrow();
+    }
+
+    /**
+     * 清单读取失败的错误：KERNEL_CAPABILITY_006。
      *
      * @param array<string, string> $arguments
      */
-    private static function invalid(string $key, array $arguments, ?\Throwable $previous = null): ConfigurationException
+    private static function invalid(string $key, array $arguments): Error
     {
-        return ConfigurationException::fromError(Error::of(self::ERROR_CODE_INVALID, $key, $arguments), $previous);
+        return Error::of(KernelErrors::INVALID_MANIFEST, $key, $arguments);
     }
 
     /**

@@ -38,6 +38,7 @@ abstract readonly class TypedId implements \JsonSerializable, \Stringable
      *
      * @return TValue
      */
+    #[\Override]
     public function jsonSerialize(): int|string
     {
         return $this->value;
@@ -46,6 +47,7 @@ abstract readonly class TypedId implements \JsonSerializable, \Stringable
     /**
      * 返回底层值的文本。
      */
+    #[\Override]
     public function __toString(): string
     {
         return (string) $this->value;

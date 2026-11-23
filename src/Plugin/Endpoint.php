@@ -121,6 +121,7 @@ final readonly class Endpoint implements \Stringable
     /**
      * 返回 `<network> <address>`。
      */
+    #[\Override]
     public function __toString(): string
     {
         return $this->network->value . ' ' . $this->address;

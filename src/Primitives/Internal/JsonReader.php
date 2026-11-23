@@ -20,10 +20,22 @@ final class JsonReader
     /** 数字的写法（RFC 8259） */
     private const string NUMBER = '/-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/A';
 
+    /** 整串是一个数字的写法；D 修饰符让 $ 只匹配串尾 */
+    private const string WHOLE_NUMBER = '/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/D';
+
     private int $offset = 0;
 
     private function __construct(private readonly string $text)
     {
+    }
+
+    /**
+     * 判断文本整串是不是一个 JSON 数字（RFC 8259 §6）：不带首尾空白、`+`、前导零与十六进制写法。配置节的字符串叶子
+     * 读成数字时按这个文法（lifecycle.md §7.2），是数字的文本可以直接交给 parse()。
+     */
+    public static function isNumber(string $text): bool
+    {
+        return preg_match(self::WHOLE_NUMBER, $text) === 1;
     }
 
     /**

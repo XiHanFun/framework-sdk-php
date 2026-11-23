@@ -10,6 +10,7 @@ use XiHan\Framework\Pipeline\ClosureMiddleware;
 use XiHan\Framework\Pipeline\PipelineBuilder;
 use XiHan\Framework\Pipeline\Placement;
 use XiHan\Framework\Primitives\ConfigurationException;
+use XiHan\Framework\Primitives\KernelErrors;
 use XiHan\Framework\Primitives\PipelineStage;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Unit;
@@ -201,7 +202,7 @@ final class Invoker
                 throw $exception;
             }
 
-            return Result::fail(OperationErrors::unhandledException($exception));
+            return Result::fail(KernelErrors::unhandledException($exception));
         }
     }
 
@@ -215,7 +216,7 @@ final class Invoker
     private static function deadline(Context $context, \Closure $next): Result
     {
         if ($context->isExpired($context->clock()->now())) {
-            return Result::fail(OperationErrors::deadlineBeforeStart());
+            return Result::fail(KernelErrors::deadlineBeforeStart());
         }
         try {
             $outcome = $next($context);
@@ -234,7 +235,7 @@ final class Invoker
             throw $exception;
         }
         // 下游把取消写成了结果：截止时间已到就按超时报告，与抛出的路径同一规则（RFC-0004「行为变化」）
-        if ($outcome->error()?->code === Context::ERROR_CODE_CANCELLED && self::deadlineReached($context)) {
+        if ($outcome->error()?->code === KernelErrors::CANCELLED && self::deadlineReached($context)) {
             return Result::fail(CancellationReason::DeadlineExceeded->toError());
         }
 

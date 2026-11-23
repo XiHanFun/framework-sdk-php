@@ -13,6 +13,13 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
  */
 final readonly class Envelope
 {
+    /**
+     * 承载租户的扩展属性名（RFC-0009「信封」，对应 Baggage 的 xihan.tenant）。
+     *
+     * Host::publish() 的信封带它时宿主逐项核对：只能是插件此刻正在处理的调用或投递的租户（invocation.md §5）。
+     */
+    public const string EXTENSION_TENANT = 'xihantenant';
+
     /** @var array<array-key, string> 扩展属性，如 xihantenant、traceparent；PHP 把纯数字的名字存成整数键 */
     public array $extensions;
 

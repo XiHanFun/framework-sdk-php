@@ -9,6 +9,7 @@ use XiHan\Framework\Plugin\Endpoint;
 use XiHan\Framework\Plugin\Internal\HostAddresses;
 use XiHan\Framework\Plugin\Internal\Versions;
 use XiHan\Framework\Plugin\Network;
+use XiHan\Framework\Plugin\Runtime;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Tests\Vectors;
 
@@ -132,6 +133,10 @@ final class HandshakeVectorsTest extends TestCase
 
     public function testTheHostVersionListIsParsed(): void
     {
+        // 本 SDK 实现的协议版本是公开常量，协商用的列表取自它
+        self::assertSame(1, Runtime::PROTOCOL_VERSION);
+        self::assertSame([Runtime::PROTOCOL_VERSION], Versions::SUPPORTED);
+        self::assertSame(Runtime::PROTOCOL_VERSION, Versions::negotiate([1, 2]));
         self::assertSame([1], Versions::parse('1'));
         self::assertSame([1, 2], Versions::parse('1, 2'));
         self::assertNull(Versions::parse(''));

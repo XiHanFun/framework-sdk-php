@@ -47,6 +47,21 @@ final class JsonTextTest extends TestCase
         }
     }
 
+    public function testFileReadersStripOneLeadingByteOrderMark(): void
+    {
+        $bom = "\xEF\xBB\xBF";
+        self::assertSame($bom, JsonText::UTF8_BOM);
+        // 检查把 BOM 当作语法错误（RFC-0001「JSON 文本」）；读文件与清单原文的入口先去掉开头的那一个
+        self::assertTrue(JsonText::check($bom . '{}')?->syntax);
+        self::assertSame('{}', JsonText::stripBom($bom . '{}'));
+        self::assertSame('{}', JsonText::stripBom('{}'));
+        self::assertSame('', JsonText::stripBom($bom));
+        self::assertSame('', JsonText::stripBom(''));
+        self::assertSame($bom . '{}', JsonText::stripBom($bom . $bom . '{}'), 'only one is removed');
+        self::assertSame('{}' . $bom, JsonText::stripBom('{}' . $bom), 'only at the start');
+        self::assertSame("\xEF\xBB{}", JsonText::stripBom("\xEF\xBB{}"), 'a partial mark is left alone');
+    }
+
     /**
      * @return list<array{string, string, string, ?string}>
      */

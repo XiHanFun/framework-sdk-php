@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Plugin;
 
-use XiHan\Framework\Operation\OperationErrors;
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\KernelErrors;
 use XiHan\Framework\Primitives\LifecycleState;
 
 /**
@@ -23,8 +23,8 @@ final class PluginErrors
     /** 回调抛出、配置节不是对象、对方写来的错误不合法、没有对应的 gRPC 状态。 */
     public const string UNEXPECTED = 'PLUGINS_UNEXPECTED_001';
 
-    /** 投递找不到订阅：与内核的未登记同码。 */
-    public const string UNSUBSCRIBED = OperationErrors::NOT_FOUND;
+    /** 投递找不到订阅：与内核的操作未登记同码（KERNEL_NOTFOUND_001）。 */
+    public const string UNSUBSCRIBED = KernelErrors::UNKNOWN_OPERATION;
 
     /** 没有可用的回调端点时 plugins.host.unavailable 的 reason（handshake.md §4）。 */
     public const string REASON_NO_ENDPOINT = 'no supported callback endpoint';

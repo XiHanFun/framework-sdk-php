@@ -38,6 +38,7 @@ final readonly class ConfigContribution implements \JsonSerializable
      *
      * @return array{section: string, schema?: string}
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         $wire = ['section' => $this->section];

@@ -30,6 +30,7 @@ final class FailureException extends \RuntimeException implements FrameworkExcep
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function errorCode(): string
     {
         return $this->error->code;
@@ -38,6 +39,7 @@ final class FailureException extends \RuntimeException implements FrameworkExcep
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function toError(): Error
     {
         return $this->error;

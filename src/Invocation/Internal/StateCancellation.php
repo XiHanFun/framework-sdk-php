@@ -21,6 +21,7 @@ final readonly class StateCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function isRequested(): bool
     {
         return $this->state->reason !== null;
@@ -29,6 +30,7 @@ final readonly class StateCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function reason(): ?CancellationReason
     {
         return $this->state->reason;
@@ -37,6 +39,7 @@ final readonly class StateCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function subscribe(\Closure $callback): string
     {
         return $this->state->subscribe($callback);
@@ -45,6 +48,7 @@ final readonly class StateCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function unsubscribe(string $id): void
     {
         $this->state->unsubscribe($id);

@@ -28,6 +28,7 @@ final class InvalidArgumentException extends \InvalidArgumentException implement
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function errorCode(): string
     {
         return $this->errorCode;
@@ -36,6 +37,7 @@ final class InvalidArgumentException extends \InvalidArgumentException implement
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function toError(): Error
     {
         return Error::literal(

@@ -91,6 +91,7 @@ final readonly class Contributions implements \JsonSerializable
      * @return array{pipeline: list<PipelineContribution>, operations: list<string>, config?: ConfigContribution,
      *     permissions: list<string>, health: list<string>}
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         $wire = ['pipeline' => $this->pipeline, 'operations' => $this->operations];

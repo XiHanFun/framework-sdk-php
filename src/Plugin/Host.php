@@ -53,12 +53,14 @@ final class Host
      * 由运行时创建。
      *
      * @param Endpoint|null $endpoint 选定的回调端点；没有可用的端点时为 null
+     * @param string $session 会话令牌（handshake.md §4）；标为敏感参数，不出现在异常的堆栈里
      * @param list<string> $declared 清单 permissions
      *
      * @internal
      */
     public function __construct(
         private readonly ?Endpoint $endpoint,
+        #[\SensitiveParameter]
         string $session,
         private readonly string $pluginId,
         private readonly array $declared,

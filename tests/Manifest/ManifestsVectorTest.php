@@ -11,7 +11,7 @@ use XiHan\Framework\Tests\Vectors;
 
 /**
  * 回放 spec/conformance/vectors/manifest/manifests.json：合法清单读得出、写出的全文逐字相等；非法清单的错误码、消息键与参数
- * 逐字相等（RFC-0002 解析规则 2 与「写出」）。
+ * 逐字相等（RFC-0002 解析规则 2 与「写出」）。抛异常的 read() 与返回 Result 的 tryRead() 各回放一遍。
  */
 final class ManifestsVectorTest extends TestCase
 {
@@ -46,6 +46,28 @@ final class ManifestsVectorTest extends TestCase
             }
         }
     }
+
+    public function testTryReadReturnsTheSameOutcomesAsResults(): void
+    {
+        foreach (self::cases('valid') as [$name, $json, $case]) {
+            $result = Manifest::tryRead($json);
+            self::assertTrue($result->isOk(), $name);
+            self::assertSame($case->written ?? null, $result->valueOrThrow()->toJson(), $name);
+        }
+        foreach (self::cases('invalid') as [$name, $json, $case]) {
+            $expected = $case->error ?? null;
+            self::assertInstanceOf(\stdClass::class, $expected, $name);
+            // 不抛异常：错误码、消息键与参数就是向量里的那一份
+            $error = Manifest::tryRead($json)->error();
+            self::assertNotNull($error, $name);
+            self::assertSame($expected->code ?? null, $error->code, $name);
+            self::assertSame($expected->messageKey ?? null, $error->messageKey, $name);
+            $arguments = $expected->arguments ?? null;
+            self::assertInstanceOf(\stdClass::class, $arguments, $name);
+            self::assertSame(get_object_vars($arguments), $error->details, $name);
+        }
+    }
+
     /**
      * 每项是 [名字, 清单的 JSON 原文, 用例]：有 text 用原文（可能是空串；重复成员写不成 JSON 值），否则把 manifest
      * 按紧凑写法写成 JSON，成员顺序照写。

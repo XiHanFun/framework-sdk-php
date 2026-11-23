@@ -21,7 +21,6 @@ use XiHan\Framework\Manifest\Manifest;
 use XiHan\Framework\Operation\Contract;
 use XiHan\Framework\Operation\Expose;
 use XiHan\Framework\Operation\Invoker;
-use XiHan\Framework\Operation\OperationErrors;
 use XiHan\Framework\Operation\Request;
 use XiHan\Framework\Operation\Response;
 use XiHan\Framework\Plugin\Configuration;
@@ -44,6 +43,7 @@ use XiHan\Framework\Primitives\FrameworkInfo;
 use XiHan\Framework\Primitives\Internal\Wire;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonObject;
+use XiHan\Framework\Primitives\KernelErrors;
 use XiHan\Framework\Primitives\LifecycleState;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Unit;
@@ -210,7 +210,7 @@ final class PluginService
             ->setSdk((new V1\SdkInfo())
                 ->setName(FrameworkInfo::SDK_NAME)
                 ->setVersion(FrameworkInfo::SDK_VERSION)
-                ->setLanguage('php'))
+                ->setLanguage(FrameworkInfo::SDK_LANGUAGE))
             ->setOperations($this->declarations())
             // 按声明的顺序写订阅，方式总是写出 competing 或 broadcast（handshake.md §3 第 5 条）
             ->setSubscriptions(array_map(
@@ -427,7 +427,7 @@ final class PluginService
                     'exception' => $exception,
                 ]);
 
-                return new Response(Result::fail(OperationErrors::unhandledException($exception)), null);
+                return new Response(Result::fail(KernelErrors::unhandledException($exception)), null);
             }
         };
         $response = $this->within($call, $request->getMetadata(), $run);
@@ -541,7 +541,7 @@ final class PluginService
                 'exception' => $exception,
             ]);
 
-            return Result::fail(OperationErrors::unhandledException($exception));
+            return Result::fail(KernelErrors::unhandledException($exception));
         }
     }
 

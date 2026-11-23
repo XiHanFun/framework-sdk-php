@@ -189,6 +189,7 @@ final readonly class Maybe implements \JsonSerializable
     /**
      * 返回线上编码：值本身或 null。
      */
+    #[\Override]
     public function jsonSerialize(): mixed
     {
         return $this->value;

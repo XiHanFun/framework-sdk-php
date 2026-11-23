@@ -11,6 +11,7 @@ use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\JsonPath;
+use XiHan\Framework\Primitives\KernelErrors;
 use XiHan\Framework\Primitives\Result;
 
 /**
@@ -167,7 +168,7 @@ final readonly class Codec
         try {
             return Result::ok(Json::encode(($this->encode)($response), false));
         } catch (\Throwable $exception) {
-            return Result::fail(OperationErrors::unhandledException($exception));
+            return Result::fail(KernelErrors::unhandledException($exception));
         }
     }
 

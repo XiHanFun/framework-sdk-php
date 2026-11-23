@@ -6,6 +6,7 @@ namespace XiHan\Framework\Plugin;
 
 use XiHan\Framework\Operation\Registry;
 use XiHan\Framework\Pipeline\PipelineBuilder;
+use XiHan\Framework\Primitives\Internal\Lists;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 
 /**
@@ -58,8 +59,9 @@ final readonly class Options
         public mixed $stderr = null,
         ?array $environment = null,
     ) {
-        $this->subscriptions = self::listOf(Subscription::class, $subscriptions, 'subscriptions');
-        $this->catalogs = self::listOf(Catalog::class, $catalogs, 'catalogs');
+        // 调用方不一定经过静态检查，运行期也核对列表的元素类型
+        $this->subscriptions = Lists::of(Subscription::class, $subscriptions, "The option 'subscriptions'");
+        $this->catalogs = Lists::of(Catalog::class, $catalogs, "The option 'catalogs'");
         foreach (['stdin' => $stdin, 'stdout' => $stdout, 'stderr' => $stderr] as $name => $stream) {
             if ($stream !== null && !is_resource($stream)) {
                 throw new InvalidArgumentException(sprintf("The option '%s' must be a stream resource.", $name));
@@ -78,26 +80,5 @@ final readonly class Options
             $environment = $checked;
         }
         $this->environment = $environment;
-    }
-
-    /**
-     * @template T of object
-     *
-     * @param class-string<T> $class
-     * @param array<array-key, mixed> $items
-     *
-     * @return list<T>
-     */
-    private static function listOf(string $class, array $items, string $name): array
-    {
-        $checked = [];
-        foreach ($items as $index => $item) {
-            if ($index !== count($checked) || !$item instanceof $class) {
-                throw new InvalidArgumentException(sprintf("The option '%s' must be a list of %s.", $name, $class));
-            }
-            $checked[] = $item;
-        }
-
-        return $checked;
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Invocation;
 
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\KernelErrors;
 
 /**
  * 取消的原因（RFC-0003 规则 1）。
@@ -18,16 +19,13 @@ enum CancellationReason
     case DeadlineExceeded;
 
     /**
-     * 翻译成原语层错误：超时为 KERNEL_TIMEOUT_001，取消为 KERNEL_CANCELLED_001。
+     * 翻译成原语层错误：超时为 KernelErrors::deadlineExceeded()，取消为 KernelErrors::cancelled()。
      */
     public function toError(): Error
     {
         return match ($this) {
-            self::DeadlineExceeded => Error::timeout(
-                Context::ERROR_CODE_DEADLINE_EXCEEDED,
-                Context::MESSAGE_DEADLINE_EXCEEDED,
-            ),
-            self::Cancelled => Error::cancelled(Context::ERROR_CODE_CANCELLED, Context::MESSAGE_CANCELLED),
+            self::DeadlineExceeded => KernelErrors::deadlineExceeded(),
+            self::Cancelled => KernelErrors::cancelled(),
         };
     }
 }

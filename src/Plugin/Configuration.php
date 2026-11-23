@@ -4,22 +4,25 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Plugin;
 
+use XiHan\Framework\Operation\Shape;
+use XiHan\Framework\Primitives\Internal\Json;
+use XiHan\Framework\Primitives\Internal\JsonReader;
+use XiHan\Framework\Primitives\Internal\Numbers;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonObject;
+use XiHan\Framework\Primitives\JsonPath;
 
 /**
  * Configure 下发的内容（lifecycle.md §2、§7.2）。
  *
  * 配置节是清单 contributes.config.section 节的 JSON 对象，按值模型原样交给作者（空等同 `{}`，没有声明配置节为 `{}`）。
- * .NET 宿主的配置源是键值字符串，叶子一律写成 JSON 字符串，所以另有类型化读取（value()、string()、int()、float()、bool()）：
- * 键按 `:` 分段，成员名按 ASCII 不区分大小写匹配（与 IConfiguration 一致），字符串叶子读成数字时按 JSON 数字的文法，读成布尔
- * 时只认 `true` 与 `false`（ASCII 不区分大小写）。配置变更时宿主不重新调用 Configure，而是重启插件进程。
+ * .NET 宿主的配置源是键值字符串，叶子一律写成 JSON 字符串，所以另有类型化读取：按键路径逐个读（value()、string()、int()、
+ * float()、bool()，键按 `:` 分段），或按形状整节读（decode()）。两种读法同一套规则：成员名按 ASCII 不区分大小写匹配
+ * （与 IConfiguration 一致），字符串叶子读成数字时按 JSON 数字的文法，读成布尔时只认 `true` 与 `false`（ASCII 不区分
+ * 大小写）。配置变更时宿主不重新调用 Configure，而是重启插件进程。
  */
 final readonly class Configuration
 {
-    /** JSON 数字的文法（RFC 8259 §6） */
-    private const string NUMBER = '/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/D';
-
     /** JSON 数字里的整数写法：没有小数与指数 */
     private const string INTEGER = '/^-?(?:0|[1-9][0-9]*)$/D';
 
@@ -115,7 +118,7 @@ final readonly class Configuration
         if (is_int($value) || is_float($value)) {
             return (float) $value;
         }
-        if (is_string($value) && preg_match(self::NUMBER, $value) === 1) {
+        if (is_string($value) && JsonReader::isNumber($value)) {
             return (float) $value;
         }
 
@@ -141,6 +144,47 @@ final readonly class Configuration
         }
 
         throw self::unreadable($key, 'a boolean');
+    }
+
+    /**
+     * 按形状读整个配置节（lifecycle.md §7.2）：与操作载荷同一套形状与核对规则（Shape），另按配置节的读法——对象的成员名按
+     * ASCII 不区分大小写对上声明的成员（逐字相同的优先，其次取文本里靠前的那个，与 value() 一致），字符串叶子读成数字时按
+     * JSON 数字的文法，读成布尔时只认 `true`、`false`（ASCII 不区分大小写）；字典的键原样保留，未知成员忽略。
+     *
+     * 返回核对过的值，与 Codec::typed() 交给创建函数的相同：对象是以声明的成员名为键的数组（只含出现了的成员），用它创建
+     * 自己的配置类型。
+     *
+     * @param Shape $shape 配置节的形状：Shape::object() 或 Shape::mapOf()
+     *
+     * @return array<array-key, mixed>
+     *
+     * @throws InvalidArgumentException 形状的根不是对象或字典，或配置节不合形状（消息带第一处问题的 JSON 路径，成员名照
+     *     配置节里的写法；PRIMITIVES_VALIDATION_001）
+     */
+    public function decode(Shape $shape): array
+    {
+        if (!$shape->isObjectLike()) {
+            throw new InvalidArgumentException('The shape of a configuration section must be an object or a map.');
+        }
+        try {
+            // 形状按 JSON 文本核对（任意 JSON 按原文保留）：把配置节按值模型写回文本再读
+            $text = Json::encode($this->section);
+        } catch (\JsonException $exception) {
+            throw new InvalidArgumentException(
+                'The configuration section cannot be written as JSON.',
+                previous: $exception,
+            );
+        }
+        $path = $shape->read(JsonReader::parse($text), JsonPath::ROOT, $text, $decoded, true);
+        if ($path !== null) {
+            throw new InvalidArgumentException(
+                sprintf("The configuration section does not match the shape at '%s'.", $path),
+            );
+        }
+
+        // 根是 JSON 对象：按对象或字典的形状读出的是以成员名为键的数组
+        /** @var array<array-key, mixed> */
+        return $decoded;
     }
 
     /**
@@ -184,13 +228,12 @@ final readonly class Configuration
     }
 
     /**
-     * 浮点写成最短的往返文本，整数值的浮点带 `.0`，与 JSON 文本一致。
+     * 浮点写成最短的往返文本，整数值的浮点带 `.0`，与 JSON 文本一致；经 Json::encode 写，不随进程的 serialize_precision
+     * 变化。非有限的浮点（配置节里超出双精度的数）在 JSON 里写不出，写成线上编码用的 `NaN`、`Infinity`、`-Infinity`。
      */
     private static function floatText(float $value): string
     {
-        $text = json_encode($value, JSON_PRESERVE_ZERO_FRACTION);
-
-        return $text === false ? (string) $value : $text;
+        return is_finite($value) ? Json::encode($value) : Numbers::plain($value);
     }
 
     private static function unreadable(string $key, string $what): InvalidArgumentException

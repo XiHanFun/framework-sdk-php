@@ -8,6 +8,7 @@ use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Pipeline\Internal\Registration;
 use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\InvalidArgumentException;
+use XiHan\Framework\Primitives\KernelErrors;
 use XiHan\Framework\Primitives\PipelineStage;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Unit;
@@ -32,14 +33,26 @@ final class PipelineBuilder
     /** 应用自己登记的中间件的归属。 */
     public const string APP_OWNER = 'app';
 
-    /** 中间件顺序约束成环。 */
-    public const string ERROR_CODE_CYCLE = 'KERNEL_PIPELINE_001';
+    /**
+     * 中间件顺序约束成环。
+     *
+     * @deprecated 改用 KernelErrors::PIPELINE_CYCLE：内核错误码集中在 Primitives\KernelErrors。
+     */
+    public const string ERROR_CODE_CYCLE = KernelErrors::PIPELINE_CYCLE;
 
-    /** 阶段名未知。 */
-    public const string ERROR_CODE_UNKNOWN_STAGE = 'KERNEL_PIPELINE_002';
+    /**
+     * 阶段名未知。
+     *
+     * @deprecated 改用 KernelErrors::UNKNOWN_STAGE：内核错误码集中在 Primitives\KernelErrors。
+     */
+    public const string ERROR_CODE_UNKNOWN_STAGE = KernelErrors::UNKNOWN_STAGE;
 
-    /** 中间件重复登记，约束主体声明时未登记，或顺序约束的目标未登记、有歧义或跨阶段。 */
-    public const string ERROR_CODE_REGISTRATION = 'KERNEL_PIPELINE_003';
+    /**
+     * 中间件重复登记，约束主体声明时未登记，或顺序约束的目标未登记、有歧义或跨阶段。
+     *
+     * @deprecated 改用 KernelErrors::PIPELINE_REGISTRATION：内核错误码集中在 Primitives\KernelErrors。
+     */
+    public const string ERROR_CODE_REGISTRATION = KernelErrors::PIPELINE_REGISTRATION;
 
     /** @var list<Registration> */
     private array $registrations = [];
@@ -57,7 +70,7 @@ final class PipelineBuilder
         return PipelineStage::tryFrom($name)
             ?? throw new ConfigurationException(
                 sprintf("Unknown pipeline stage '%s'.", $name),
-                self::ERROR_CODE_UNKNOWN_STAGE,
+                KernelErrors::UNKNOWN_STAGE,
             );
     }
 
@@ -373,7 +386,7 @@ final class PipelineBuilder
                         $stage->manifestName(),
                         implode(', ', $stuck),
                     ),
-                    self::ERROR_CODE_CYCLE,
+                    KernelErrors::PIPELINE_CYCLE,
                 );
             }
             $node = $remaining[$picked];
@@ -389,6 +402,6 @@ final class PipelineBuilder
 
     private static function registrationError(string $message): ConfigurationException
     {
-        return new ConfigurationException($message, self::ERROR_CODE_REGISTRATION);
+        return new ConfigurationException($message, KernelErrors::PIPELINE_REGISTRATION);
     }
 }

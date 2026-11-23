@@ -27,6 +27,7 @@ use XiHan\Framework\Primitives\ConfigurationException;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\FrameworkException;
 use XiHan\Framework\Primitives\FrameworkInfo;
+use XiHan\Framework\Primitives\Internal\JsonText;
 use XiHan\Framework\Primitives\LifecycleState;
 
 use function Amp\async;
@@ -44,6 +45,9 @@ use function Amp\delay;
  */
 final class Runtime
 {
+    /** 本 SDK 实现的插件协议版本（xihan.plugin.v1）：握手时从宿主给出的列表里选它（handshake.md §3 第 1 条）。 */
+    public const int PROTOCOL_VERSION = 1;
+
     /** 携带会话令牌的元数据键（handshake.md §4）。 */
     public const string SESSION_METADATA = 'xihan-plugin-session';
 
@@ -71,9 +75,6 @@ final class Runtime
     /** stdin 关闭与 SIGTERM 之后收尾的总时限（秒）：短于宿主发出终止信号后再等的 5 秒（lifecycle.md §7.7） */
     private const float SHUTDOWN_LIMIT = 3.0;
 
-    /** UTF-8 的 BOM */
-    private const string BOM = "\xEF\xBB\xBF";
-
     private readonly Lifecycle $lifecycle;
 
     private readonly PluginService $service;
@@ -91,6 +92,7 @@ final class Runtime
     private bool $shuttingDown = false;
 
     /**
+     * @param string $session 会话令牌；标为敏感参数，不出现在异常的堆栈里
      * @param array<string, string> $environment
      */
     private function __construct(
@@ -98,6 +100,7 @@ final class Runtime
         Manifest $manifest,
         string $manifestText,
         private readonly Logger $logger,
+        #[\SensitiveParameter]
         private readonly string $session,
         array $environment,
     ) {
@@ -153,7 +156,7 @@ final class Runtime
             // 先核对依赖：缺包时说清楚要装什么，而不是在加载协议类时报类不存在
             Dependencies::check();
             // 握手发清单文件的原文，去掉开头的 BOM（handshake.md §3 第 3 条）；读清单也按去掉之后的文本
-            $text = str_starts_with($options->manifest, self::BOM) ? substr($options->manifest, 3) : $options->manifest;
+            $text = JsonText::stripBom($options->manifest);
             $manifest = Manifest::read($text);
             $logger = $logger->with(['plugin' => $manifest->id]);
             self::checkDeclarations($options, $manifest);

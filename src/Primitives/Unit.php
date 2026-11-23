@@ -17,6 +17,7 @@ enum Unit implements \JsonSerializable
     /**
      * 编码为空对象。
      */
+    #[\Override]
     public function jsonSerialize(): \stdClass
     {
         return new \stdClass();

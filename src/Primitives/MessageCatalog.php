@@ -59,6 +59,7 @@ final readonly class MessageCatalog implements MessageResolver
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function resolve(string $key, string $locale, array $arguments): ?string
     {
         $lower = strtolower($locale);

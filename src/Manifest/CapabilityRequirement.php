@@ -82,6 +82,7 @@ final readonly class CapabilityRequirement implements \JsonSerializable, \String
     /**
      * 返回 `id@version[?]`（规范形式不带 `^`）。
      */
+    #[\Override]
     public function __toString(): string
     {
         return $this->id . '@' . $this->version . ($this->optional ? '?' : '');
@@ -92,6 +93,7 @@ final readonly class CapabilityRequirement implements \JsonSerializable, \String
      *
      * @return array{id: string, version: string, optional: bool}
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         return ['id' => $this->id, 'version' => (string) $this->version, 'optional' => $this->optional];

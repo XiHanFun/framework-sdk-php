@@ -296,6 +296,7 @@ final readonly class Error implements \JsonSerializable, \Stringable
     /**
      * 返回「码: 消息」，便于日志。
      */
+    #[\Override]
     public function __toString(): string
     {
         return $this->code . ': ' . $this->message();
@@ -306,6 +307,7 @@ final readonly class Error implements \JsonSerializable, \Stringable
      *
      * @return array<string, mixed>
      */
+    #[\Override]
     public function jsonSerialize(): array
     {
         $wire = ['code' => $this->code, 'message' => $this->message()];

@@ -12,6 +12,7 @@ final readonly class NullCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function isRequested(): bool
     {
         return false;
@@ -20,6 +21,7 @@ final readonly class NullCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function reason(): ?CancellationReason
     {
         return null;
@@ -28,6 +30,7 @@ final readonly class NullCancellation implements Cancellation
     /**
      * 永不调用回调；返回的 ID 撤销时什么都不做。
      */
+    #[\Override]
     public function subscribe(\Closure $callback): string
     {
         return '';
@@ -36,6 +39,7 @@ final readonly class NullCancellation implements Cancellation
     /**
      * {@inheritDoc}
      */
+    #[\Override]
     public function unsubscribe(string $id): void
     {
     }

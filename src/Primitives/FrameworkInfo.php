@@ -21,6 +21,9 @@ final class FrameworkInfo
     /** 本 SDK 的版本；随发布标签一起更新。 */
     public const string SDK_VERSION = '0.2.0-rc.1';
 
+    /** 握手时上报的实现语言（plugin.proto 的 SdkInfo.language）。 */
+    public const string SDK_LANGUAGE = 'php';
+
     /** SDK 仓库地址。 */
     public const string REPOSITORY = 'https://github.com/XiHanFun/framework-sdk-php';
 

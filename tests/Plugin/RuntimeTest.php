@@ -23,6 +23,7 @@ use XiHan\Framework\Plugin\Runtime;
 use XiHan\Framework\Plugin\Subscription;
 use XiHan\Framework\Plugin\SubscriptionMode;
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\FrameworkInfo;
 use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\LifecycleState;
 use XiHan\Framework\Primitives\Result;
@@ -91,6 +92,14 @@ final class RuntimeTest extends TestCase
 
             $handshake = $harness->handshake();
             self::assertSame(1, $handshake->getProtocolVersion());
+            self::assertSame(Runtime::PROTOCOL_VERSION, $handshake->getProtocolVersion());
+            // 握手上报的 SDK 身份取自 FrameworkInfo（plugin.proto 的 SdkInfo）
+            $sdk = $handshake->getSdk();
+            self::assertInstanceOf(V1\SdkInfo::class, $sdk);
+            self::assertSame('php', FrameworkInfo::SDK_LANGUAGE);
+            self::assertSame(FrameworkInfo::SDK_LANGUAGE, $sdk->getLanguage());
+            self::assertSame(FrameworkInfo::SDK_NAME, $sdk->getName());
+            self::assertSame(FrameworkInfo::SDK_VERSION, $sdk->getVersion());
             self::assertSame(1, $handshake->getPrimitives());
             self::assertSame(self::MANIFEST, $handshake->getManifest());
             $operations = [];

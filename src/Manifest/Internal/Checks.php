@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Manifest\Internal;
 
+use XiHan\Framework\Primitives\Internal\Lists;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 
 /**
@@ -76,7 +77,7 @@ final class Checks
     }
 
     /**
-     * 核对数组是给定类型的列表；运行期也要核对，调用方不一定经过静态检查。
+     * 核对清单的一个字段是给定类型的列表；运行期也要核对，调用方不一定经过静态检查（共用的核对在 Lists）。
      *
      * @template T of object
      *
@@ -89,19 +90,11 @@ final class Checks
      */
     public static function listOf(string $class, array $values, string $field): array
     {
-        $checked = [];
-        foreach ($values as $index => $value) {
-            if ($index !== count($checked) || !$value instanceof $class) {
-                throw new InvalidArgumentException(sprintf("The field '%s' must be a list of %s.", $field, $class));
-            }
-            $checked[] = $value;
-        }
-
-        return $checked;
+        return Lists::of($class, $values, sprintf("The field '%s'", $field));
     }
 
     /**
-     * 核对数组是字符串列表。
+     * 核对清单的一个字段是字符串列表。
      *
      * @param array<array-key, mixed> $values
      *
@@ -111,15 +104,7 @@ final class Checks
      */
     public static function strings(array $values, string $field): array
     {
-        $checked = [];
-        foreach ($values as $index => $value) {
-            if ($index !== count($checked) || !is_string($value)) {
-                throw new InvalidArgumentException(sprintf("The field '%s' must be a list of strings.", $field));
-            }
-            $checked[] = $value;
-        }
-
-        return $checked;
+        return Lists::strings($values, sprintf("The field '%s'", $field));
     }
 
     /**
