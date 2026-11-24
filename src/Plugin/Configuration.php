@@ -32,7 +32,7 @@ final readonly class Configuration
     /**
      * @param JsonObject $section 配置节
      * @param list<string> $grantedPermissions 宿主授予的权限；回调前的权限核对以它为准（invocation.md §5）
-     * @param list<ResolvedBinding> $bindings 已解析的资源绑定
+     * @param list<ResolvedBinding> $bindings 已解析的资源绑定，按宿主下发的先后，每个连同它的属性
      * @param string $workDirectory 宿主为插件分配的可写目录（宿主停止时不删除）
      */
     public function __construct(

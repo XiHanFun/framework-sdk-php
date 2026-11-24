@@ -249,9 +249,16 @@ final class PluginService
             );
         } else {
             $permissions = iterator_to_array($request->getGrantedPermissions(), false);
+            // 绑定连同属性原样交给作者（lifecycle.md §7.2）：属性名不折叠大小写、不核对文法与上限，没有属性时是空表；
+            // 主值与属性值可能是凭据，运行时不把它们写进日志与错误
             $bindings = [];
             foreach ($request->getBindings() as $binding) {
-                $bindings[] = new ResolvedBinding($binding->getName(), $binding->getType(), $binding->getValue());
+                $bindings[] = new ResolvedBinding(
+                    $binding->getName(),
+                    $binding->getType(),
+                    $binding->getValue(),
+                    iterator_to_array($binding->getProperties()),
+                );
             }
             // 回调前的权限核对以 granted_permissions 为准（invocation.md §5）
             $this->host->grant(array_values(array_filter($permissions, is_string(...))));

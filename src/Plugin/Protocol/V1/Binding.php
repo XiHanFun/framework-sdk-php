@@ -34,6 +34,14 @@ class Binding extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>string value = 3;</code>
      */
     protected $value = '';
+    /**
+     * 绑定的其余属性，键是属性名（区分大小写）、值是属性值；没有其余属性时为空。来源只给了属性、没有主值的绑定照常下发，
+     * `value` 为空。属性名的文法、数量与大小的上限见 lifecycle.md §2；属性值可能是凭据，宿主与插件都不得写进日志。
+     * 较早的宿主不发这个字段，较早的插件忽略它。
+     *
+     * Generated from protobuf field <code>map<string, string> properties = 4;</code>
+     */
+    private $properties;
 
     /**
      * Constructor.
@@ -47,6 +55,10 @@ class Binding extends \Google\Protobuf\Internal\Message
      *           资源类型（`connection:relational`、`cache:distributed`、`queue`、`blob`）。
      *     @type string $value
      *           连接串或地址。
+     *     @type array|\Google\Protobuf\Internal\MapField $properties
+     *           绑定的其余属性，键是属性名（区分大小写）、值是属性值；没有其余属性时为空。来源只给了属性、没有主值的绑定照常下发，
+     *           `value` 为空。属性名的文法、数量与大小的上限见 lifecycle.md §2；属性值可能是凭据，宿主与插件都不得写进日志。
+     *           较早的宿主不发这个字段，较早的插件忽略它。
      * }
      */
     public function __construct($data = null)
@@ -129,6 +141,36 @@ class Binding extends \Google\Protobuf\Internal\Message
     {
         GPBUtil::checkString($var, true);
         $this->value = $var;
+
+        return $this;
+    }
+
+    /**
+     * 绑定的其余属性，键是属性名（区分大小写）、值是属性值；没有其余属性时为空。来源只给了属性、没有主值的绑定照常下发，
+     * `value` 为空。属性名的文法、数量与大小的上限见 lifecycle.md §2；属性值可能是凭据，宿主与插件都不得写进日志。
+     * 较早的宿主不发这个字段，较早的插件忽略它。
+     *
+     * Generated from protobuf field <code>map<string, string> properties = 4;</code>
+     * @return \Google\Protobuf\Internal\MapField
+     */
+    public function getProperties()
+    {
+        return $this->properties;
+    }
+
+    /**
+     * 绑定的其余属性，键是属性名（区分大小写）、值是属性值；没有其余属性时为空。来源只给了属性、没有主值的绑定照常下发，
+     * `value` 为空。属性名的文法、数量与大小的上限见 lifecycle.md §2；属性值可能是凭据，宿主与插件都不得写进日志。
+     * 较早的宿主不发这个字段，较早的插件忽略它。
+     *
+     * Generated from protobuf field <code>map<string, string> properties = 4;</code>
+     * @param array|\Google\Protobuf\Internal\MapField $var
+     * @return $this
+     */
+    public function setProperties(array|\Google\Protobuf\Internal\MapField $var)
+    {
+        $arr = GPBUtil::checkMapField($var, \Google\Protobuf\Internal\GPBType::STRING, \Google\Protobuf\Internal\GPBType::STRING);
+        $this->properties = $arr;
 
         return $this;
     }

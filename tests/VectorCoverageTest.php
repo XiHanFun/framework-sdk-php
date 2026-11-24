@@ -26,6 +26,8 @@ final class VectorCoverageTest extends TestCase
         'operations/payload-reasons.json',
         // Pipeline\OrderingVectorTest
         'pipeline/ordering.json',
+        // Plugin\BindingPropertiesTest（reading；其余各节是宿主一侧的）
+        'plugin/binding-properties.json',
         // Plugin\CallbackStatusTest
         'plugin/callback-status.json',
         // Plugin\DeadlineVectorsTest
