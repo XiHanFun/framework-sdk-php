@@ -22,7 +22,7 @@ final readonly class Contract
     /**
      * 创建契约。
      *
-     * @param string $id 操作 ID `<resource>.<verb>`
+     * @param string $id 操作 ID `<resource>.<verb>`，不超过 128 个字符（OperationId::MAX_LENGTH）
      * @param Stability $stability 稳定性；缺省 stable
      * @param list<Expose> $expose 暴露的协议
      * @param string|null $permission 权限码；与 policy 二选一
@@ -39,7 +39,11 @@ final readonly class Contract
         public ?string $policy = null,
     ) {
         if (!OperationId::isValid($id)) {
-            throw new InvalidArgumentException(sprintf("The operation ID '%s' must match <resource>.<verb>.", $id));
+            throw new InvalidArgumentException(sprintf(
+                "The operation ID '%s' must match <resource>.<verb> and be at most %d characters long.",
+                $id,
+                OperationId::MAX_LENGTH,
+            ));
         }
         if ($permission !== null && $policy !== null) {
             throw new InvalidArgumentException(

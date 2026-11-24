@@ -6,14 +6,17 @@ namespace XiHan\Framework\Tests\Primitives;
 
 use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Invocation\Context;
+use XiHan\Framework\Manifest\Contributions;
+use XiHan\Framework\Operation\Contract;
 use XiHan\Framework\Primitives\BaggageKeys;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\LifecycleState;
+use XiHan\Framework\Primitives\OperationId;
 use XiHan\Framework\Tests\Vectors;
 
 /**
- * 原语层与规范一致性向量的对照：错误码、Baggage 键、生命周期迁移。
+ * 原语层与规范一致性向量的对照：错误码、操作 ID、Baggage 键、生命周期迁移。
  */
 final class VectorsTest extends TestCase
 {
@@ -31,6 +34,54 @@ final class VectorsTest extends TestCase
         self::assertSame('PERSISTENCE', ErrorCode::domainOf('PERSISTENCE_CONFLICT_001'));
         self::assertNull(ErrorCode::kindOf('bad'));
         self::assertNull(ErrorCode::domainOf('bad'));
+    }
+
+    /**
+     * 回放 operation-ids.json（conventions/operation-ids.md，RFC-0011「操作 ID」，ADR-0276）：操作契约与清单的
+     * `contributes.operations` 用的是同一条规则，两处都回放；整个 ID 不超过 maxLength 个字符。
+     */
+    public function testOperationIdsFollowTheVectors(): void
+    {
+        $vectors = Vectors::primitives('operation-ids');
+        $valid = Vectors::strings($vectors, 'valid');
+        $invalid = Vectors::strings($vectors, 'invalid');
+        self::assertNotSame([], $valid, 'the vectors list valid IDs');
+        self::assertNotSame([], $invalid, 'the vectors list invalid IDs');
+        self::assertSame($vectors['maxLength'] ?? null, OperationId::MAX_LENGTH, 'the maximum length');
+
+        foreach ($valid as $id) {
+            self::assertTrue(OperationId::isValid($id), sprintf('%s must be valid', $id));
+            self::assertSame($id, (new Contract($id))->id, sprintf('%s names a contract', $id));
+            $contributions = new Contributions(operations: [$id]);
+            self::assertSame([$id], $contributions->operations, sprintf('%s is contributed by a manifest', $id));
+        }
+        foreach ($invalid as $id) {
+            self::assertFalse(OperationId::isValid($id), sprintf('%s must be invalid', json_encode($id)));
+            $creations = [
+                static fn () => new Contract($id),
+                static fn () => new Contributions(operations: [$id]),
+            ];
+            foreach ($creations as $create) {
+                try {
+                    $create();
+                    self::fail(sprintf('%s must be rejected', json_encode($id)));
+                } catch (InvalidArgumentException $exception) {
+                    self::assertSame(ErrorCode::INVALID_ARGUMENT, $exception->errorCode());
+                }
+            }
+        }
+
+        // 向量两侧都要到：正好 maxLength 个字符的合法，别处都合文法、只多一个字符的不合法，只有上限这一条拦得住它
+        self::assertContains(
+            OperationId::MAX_LENGTH,
+            array_map(strlen(...), $valid),
+            'the vectors accept an ID of exactly the maximum length',
+        );
+        self::assertContains(
+            OperationId::MAX_LENGTH + 1,
+            array_map(strlen(...), $invalid),
+            'the vectors reject an ID one character over the maximum length',
+        );
     }
 
     public function testBaggageKeysFollowTheVectors(): void

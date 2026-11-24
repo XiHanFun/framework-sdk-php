@@ -4,7 +4,7 @@
 
 | 命名空间 | 规范 | 向量（`conformance/vectors/`） | 测试 | .NET 对应 |
 | --- | --- | --- | --- | --- |
-| `XiHan\Framework\Primitives` | `rfcs/0001-primitives.md`（Result、Error、JSON 文本、空白字符、文法的匹配）、`rfcs/0010-localization.md`（模板与消息键）、`rfcs/0011-operations.md`（操作 ID）、`conventions/` | `primitives/error-codes.json`、`baggage-keys.json`、`lifecycle-transitions.json`、`json-text.json`、`wire-encoding.json`、`message-templates.json`、`kernel-messages.json` | `tests/Primitives/`、`tests/KernelMessagesTest.php` | `XiHan.Framework.Primitives` |
+| `XiHan\Framework\Primitives` | `rfcs/0001-primitives.md`（Result、Error、JSON 文本、空白字符、文法的匹配）、`rfcs/0010-localization.md`（模板与消息键）、`rfcs/0011-operations.md`（操作 ID：文法与 128 个字符的上限，`OperationId`）、`conventions/` | `primitives/error-codes.json`、`operation-ids.json`、`baggage-keys.json`、`lifecycle-transitions.json`、`json-text.json`、`wire-encoding.json`、`message-templates.json`、`kernel-messages.json` | `tests/Primitives/`、`tests/KernelMessagesTest.php` | `XiHan.Framework.Primitives` |
 | `XiHan\Framework\Manifest` | `rfcs/0002-manifest.md`、`manifest/manifest.schema.json` | `manifest/manifests.json`、`primitives/capability-requirements.json` | `tests/Manifest/` | `XiHan.Framework.Primitives/Manifests`（模型）、`XiHan.Framework.Kernel/Capabilities/ManifestReader.cs`（读取） |
 | `XiHan\Framework\Invocation` | `rfcs/0003-invocation-context.md`、`conventions/baggage-keys.md` | `primitives/trace-context.json`、`primitives/baggage-keys.json` | `tests/Invocation/` | `XiHan.Framework.Primitives/InvocationContext.cs` |
 | `XiHan\Framework\Pipeline` | `rfcs/0004-pipeline-stages.md` | `pipeline/ordering.json` | `tests/Pipeline/` | `XiHan.Framework.Kernel/Pipeline` |

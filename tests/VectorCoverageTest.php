@@ -54,6 +54,8 @@ final class VectorCoverageTest extends TestCase
         'primitives/lifecycle-transitions.json',
         // Primitives\MessageTemplatesTest
         'primitives/message-templates.json',
+        // Primitives\VectorsTest
+        'primitives/operation-ids.json',
         // Invocation\TraceContextTest
         'primitives/trace-context.json',
         // Primitives\WireEncodingTest

@@ -20,8 +20,11 @@ final class Checks
     /** 版本文法：SemVer 2.0；D 修饰符让 $ 只匹配串尾（RFC-0001「文法的匹配」） */
     public const string SEMVER_PATTERN = '/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/D';
 
-    /** 激活事件文法 */
-    public const string ACTIVATION_PATTERN = '/^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9.*-]+)$/D';
+    /**
+     * 激活事件文法（RFC-0002 解析规则 2 第 3 步，lifecycle.md §3）：`onOperation:` 的模式是操作 ID 的字符加 `*`，
+     * `onEvent:` 的模式是主题的字符加 `*`，所以只有它可以带下划线（ADR-0276）
+     */
+    public const string ACTIVATION_PATTERN = '/^(onStartup|onOperation:[a-z0-9.*-]+|onEvent:[a-z0-9._*-]+)$/D';
 
     /** 插件所需权限的文法；`.` 不匹配换行 */
     public const string PERMISSION_PATTERN = '/^(net\.outbound|fs\.read|fs\.write|capability):.+$/D';

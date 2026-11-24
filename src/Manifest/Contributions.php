@@ -33,7 +33,7 @@ final readonly class Contributions implements \JsonSerializable
      * 创建贡献点。
      *
      * @param list<PipelineContribution> $pipeline 中间件
-     * @param list<string> $operations 操作 ID `<resource>.<verb>`
+     * @param list<string> $operations 操作 ID `<resource>.<verb>`，每个不超过 128 个字符
      * @param ConfigContribution|null $config 配置节
      * @param list<string> $permissions 此包定义的权限码
      * @param list<string> $health 健康项名
@@ -49,12 +49,15 @@ final readonly class Contributions implements \JsonSerializable
     ) {
         $this->pipeline = Checks::listOf(PipelineContribution::class, $pipeline, 'contributes.pipeline');
         $this->operations = Checks::strings($operations, 'contributes.operations');
-        // 按操作 ID 文法而不是旧 Schema 较松的形式：清单不能声明登记表会拒绝的 ID
+        // 按操作 ID 的规则（文法与 128 个字符的上限）而不是旧 Schema 较松的形式：清单不能声明登记表会拒绝的 ID
         foreach ($this->operations as $operation) {
             if (!OperationId::isValid($operation)) {
-                throw new InvalidArgumentException(
-                    sprintf("The operation '%s' in 'contributes.operations' must match <resource>.<verb>.", $operation),
-                );
+                throw new InvalidArgumentException(sprintf(
+                    "The operation '%s' in 'contributes.operations' must match <resource>.<verb> "
+                    . 'and be at most %d characters long.',
+                    $operation,
+                    OperationId::MAX_LENGTH,
+                ));
             }
         }
         // 插件定义的权限码由宿主在登记代理操作时一并登记：不合文法或重复的码宿主在发现时拒绝整个插件，
