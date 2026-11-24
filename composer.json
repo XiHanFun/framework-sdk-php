@@ -4,7 +4,7 @@
   "type": "library",
   "license": "MIT",
   "keywords": ["xihan", "framework", "plugin", "pipeline", "manifest"],
-  "homepage": "https://framework.xihanfun.com",
+  "homepage": "https://framework.docs.xihanfun.com",
   "support": {
     "issues": "https://github.com/XiHanFun/framework-sdk-php/issues",
     "source": "https://github.com/XiHanFun/framework-sdk-php",
