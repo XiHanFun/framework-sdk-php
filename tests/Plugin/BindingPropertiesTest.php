@@ -154,7 +154,11 @@ final class BindingPropertiesTest extends TestCase
         self::assertSame(self::PASSWORD, $binding->property('password'));
         self::assertTrue((new \ReflectionProperty(ResolvedBinding::class, 'properties'))->isReadOnly());
 
-        // 属性值必须是字符串；消息只带绑定名与属性名
+        // 属性值必须是字符串；消息只带绑定名与属性名。
+        // 堆栈要带上参数才核对得到敏感参数：production 的 php.ini（CI 的 setup-php 用的就是它）把 zend.exception_ignore_args 设成 On，
+        // 那时堆栈里一个参数都没有，这里临时打开，之后还原
+        $ignoreArgs = ini_set('zend.exception_ignore_args', '0');
+        self::assertNotFalse($ignoreArgs, 'zend.exception_ignore_args could not be changed.');
         try {
             new ResolvedBinding('db', 'connection:relational', self::VALUE, ['port' => 5432, 'password' => self::PASSWORD]);
             self::fail('a property value that is not a string must be rejected');
@@ -166,6 +170,8 @@ final class BindingPropertiesTest extends TestCase
             self::assertCount(4, $arguments);
             self::assertInstanceOf(\SensitiveParameterValue::class, $arguments[2]);
             self::assertInstanceOf(\SensitiveParameterValue::class, $arguments[3]);
+        } finally {
+            ini_set('zend.exception_ignore_args', $ignoreArgs);
         }
     }
 
