@@ -32,7 +32,7 @@ final class VectorCoverageTest extends TestCase
         'plugin/callback-status.json',
         // Plugin\DeadlineVectorsTest
         'plugin/deadlines.json',
-        // Plugin\EnvelopeTest（host 档；SDK 读宿主写来的 time 是同一条文法）
+        // Plugin\EnvelopeTest（valid 与 invalid：SDK 读宿主写来的 time 是同一条文法）
         'plugin/envelope-times.json',
         // Plugin\ErrorReadingTest
         'plugin/error-reading.json',
@@ -44,6 +44,8 @@ final class VectorCoverageTest extends TestCase
         'plugin/plugin-messages.json',
         // Plugin\HandshakeVectorsTest
         'plugin/protocol-versions.json',
+        // Plugin\EnvelopeTest（取 microseconds 一项）、Plugin\RuntimeTest（unreadable）
+        'plugin/sdk-envelope-times.json',
         // Primitives\VectorsTest
         'primitives/baggage-keys.json',
         // Manifest\ManifestTest

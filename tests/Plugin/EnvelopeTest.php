@@ -7,17 +7,21 @@ namespace XiHan\Framework\Tests\Plugin;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Plugin\Envelope;
+use XiHan\Framework\Plugin\Internal\Deadlines;
 use XiHan\Framework\Plugin\Internal\Protocol;
 use XiHan\Framework\Plugin\Protocol\V1;
 use XiHan\Framework\Tests\Vectors;
 
 /**
  * 信封的 `time` 与 `dataschema`（invocation.md §4，RFC-0009「信封」第 3 条，ADR-0305、ADR-0306）：写出的文本、读入、往返与
- * 没有时间；回放 conformance/vectors/plugin/envelope-times.json（host 档：宿主读插件写来的 `time` 与 SDK 读宿主写来的是
- * 同一条文法）。PHP 的时刻精确到微秒。
+ * 没有时间；回放 plugin 档的 conformance/vectors/plugin/envelope-times.json（宿主读插件写来的 `time` 与 SDK 读宿主写来的是
+ * 同一条文法）与 sdk-envelope-times.json（SDK 一侧按时间类型精度的写出与读入，ADR-0310）。PHP 的时刻精确到微秒。
  */
 final class EnvelopeTest extends TestCase
 {
+    /** PHP 时刻的精度在 sdk-envelope-times.json 里的名字：微秒，写出时最多六位小数 */
+    private const string PRECISION = 'microseconds';
+
     /**
      * 六个 SDK 共用的写出用例：作者给的时刻（按 PHP 的解析器读）与 SDK 写出的 `time`。
      *
@@ -147,6 +151,46 @@ final class EnvelopeTest extends TestCase
         }
     }
 
+    public function testSdkEnvelopeTimesFollowTheVectorAtMicrosecondPrecision(): void
+    {
+        $vectors = Vectors::object('plugin/sdk-envelope-times');
+        self::assertInstanceOf(\stdClass::class, $vectors->precisions);
+        self::assertSame(6, $vectors->precisions->{self::PRECISION});
+        // writing：经发布时的写出路径写成文本，与本精度的那一项逐字比较
+        self::assertIsArray($vectors->writing);
+        foreach ($vectors->writing as $case) {
+            self::assertInstanceOf(\stdClass::class, $case);
+            self::assertIsString($case->name);
+            self::assertInstanceOf(\stdClass::class, $case->text);
+            $time = null;
+            if ($case->instant !== null) {
+                self::assertIsString($case->instant);
+                $time = self::authored($case->instant);
+            }
+            $written = Protocol::toProtoEnvelope(new Envelope('orders', 'e1', 'urn:test', 'orders.created', time: $time));
+            self::assertSame($case->text->{self::PRECISION}, $written->getTime(), $case->name);
+        }
+        // reading：经投递的读入路径读出，与九位小数的 UTC 时刻比较（本精度的那一项后三位总是 0）
+        self::assertIsArray($vectors->reading);
+        foreach ($vectors->reading as $case) {
+            self::assertInstanceOf(\stdClass::class, $case);
+            self::assertIsString($case->name);
+            self::assertIsString($case->text);
+            self::assertInstanceOf(\stdClass::class, $case->utc);
+            $utc = $case->utc->{self::PRECISION};
+            self::assertIsString($utc);
+            self::assertSame(substr($utc, 0, 26) . 'Z', self::deliveredTime($case->text), $case->name);
+        }
+        // unreadable：一条也读不出，投递以 InvalidArgument 拒绝（RuntimeTest 经 gRPC 核对同一份文本）
+        self::assertIsArray($vectors->unreadable);
+        foreach ($vectors->unreadable as $case) {
+            self::assertInstanceOf(\stdClass::class, $case);
+            self::assertIsString($case->name);
+            self::assertIsString($case->text);
+            self::assertNull(self::delivered($case->text), $case->name);
+        }
+    }
+
     public function testTheDataSchemaIsCarriedAsIs(): void
     {
         $schema = 'https://example.com/schemas/order.json';
@@ -162,6 +206,21 @@ final class EnvelopeTest extends TestCase
             self::assertNotNull($delivered);
             self::assertSame($text, $delivered->dataSchema, $text);
         }
+    }
+
+    /**
+     * `writing` 的 `instant`：按投递时读宿主文本的读法读成 UTC 时刻（比微秒更细的小数截去），再换回原文的偏移，好核对写出时
+     * 换算成 UTC；`Z` 的留在 UTC。
+     */
+    private static function authored(string $instant): \DateTimeImmutable
+    {
+        $utc = Deadlines::parse($instant);
+        self::assertNotNull($utc, $instant);
+        if (preg_match('/([+-][0-9]{2}:[0-9]{2})$/D', $instant, $offset) !== 1) {
+            return $utc;
+        }
+
+        return $utc->setTimezone(new \DateTimeZone($offset[1]));
     }
 
     private static function envelope(\DateTimeImmutable $time): Envelope

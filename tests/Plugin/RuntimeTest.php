@@ -28,6 +28,7 @@ use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\LifecycleState;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Stability;
+use XiHan\Framework\Tests\Vectors;
 
 use function Amp\async;
 use function Amp\delay;
@@ -215,6 +216,16 @@ final class RuntimeTest extends TestCase
             foreach (['items.changed', 'nobody.listens'] as $topic) {
                 $unreadable = self::envelope($topic, 'e1', 'x')->setTime('2026-11-25T03:25:00');
                 self::assertSame(GrpcStatus::INVALID_ARGUMENT, Harness::grpcStatus(fn () => $harness->deliver($unreadable)), $topic);
+            }
+            // sdk-envelope-times.json 的 unreadable 每一条都以 InvalidArgument 拒绝（ADR-0310）
+            $unreadableTimes = Vectors::object('plugin/sdk-envelope-times')->unreadable;
+            self::assertIsArray($unreadableTimes);
+            foreach ($unreadableTimes as $case) {
+                self::assertInstanceOf(\stdClass::class, $case);
+                self::assertIsString($case->name);
+                self::assertIsString($case->text);
+                $unreadable = self::envelope('items.changed', 'e1', 'x')->setTime($case->text);
+                self::assertSame(GrpcStatus::INVALID_ARGUMENT, Harness::grpcStatus(fn () => $harness->deliver($unreadable)), $case->name);
             }
             self::assertSame([], $this->events, 'an envelope whose time cannot be read reaches no handler');
             self::assertSame([
