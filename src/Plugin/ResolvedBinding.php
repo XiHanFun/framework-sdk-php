@@ -18,10 +18,13 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
  * 与 array_keys() 给出的是整数键。按名字读用 property() 与 hasProperty()，要属性名用 propertyNames()，它们一律按字符串。
  *
  * 主值与属性值可能是凭据，不要写进日志、错误与健康条目：var_dump()、print_r() 等调试输出只带绑定名、类型与属性名
- * （__debugInfo()），构造参数标为敏感参数、不出现在异常的堆栈里。json_encode()、var_export() 与 (array) 转换按属性原样
- * 写出，不在此列。
+ * （__debugInfo()），构造参数标为敏感参数、不出现在异常的堆栈里。json_encode() 写出的 JSON（jsonSerialize()，单个绑定、
+ * 绑定的数组与含绑定的 Configuration 都经过它，SDK 的 Logger 也是）只有 `{"name":…,"type":…,"propertyNames":[…]}`，
+ * 属性名一律是字符串、按升序，与 TypeScript SDK 的 toJSON 同样的成员与先后；这份 JSON 读不回原来的绑定，这是有意的。
+ * var_export()、(array) 转换与 get_object_vars() 不经任何可以接管的钩子，serialize() 要能原样读回、SDK 不接管它，
+ * 它们照样写出全部属性，不在此列。
  */
-final readonly class ResolvedBinding
+final readonly class ResolvedBinding implements \JsonSerializable
 {
     /** @var array<array-key, string> 其余属性：属性名 → 属性值，没有属性时为空表；PHP 把纯数字的属性名存成整数键 */
     public array $properties;
@@ -88,9 +91,32 @@ final readonly class ResolvedBinding
      */
     public function __debugInfo(): array
     {
+        return ['name' => $this->name, 'type' => $this->type, 'properties' => $this->sortedPropertyNames()];
+    }
+
+    /**
+     * json_encode() 写出的内容：`{"name":…,"type":…,"propertyNames":[…]}`，属性名一律是字符串（纯数字的名字也是）、按升序，
+     * 没有属性时是空数组，不带主值与属性值（lifecycle.md §7.2）。
+     *
+     * @return array{name: string, type: string, propertyNames: list<string>}
+     */
+    #[\Override]
+    public function jsonSerialize(): array
+    {
+        return ['name' => $this->name, 'type' => $this->type, 'propertyNames' => $this->sortedPropertyNames()];
+    }
+
+    /**
+     * 返回按字节升序排列的属性名，一律是字符串：调试输出与 JSON 只带名字，先后固定。
+     *
+     * @return list<string>
+     */
+    private function sortedPropertyNames(): array
+    {
         $names = $this->propertyNames();
+        // 按字符串比较：缺省的比较会把 '8080' 与 '0' 当数字排
         sort($names, SORT_STRING);
 
-        return ['name' => $this->name, 'type' => $this->type, 'properties' => $names];
+        return $names;
     }
 }

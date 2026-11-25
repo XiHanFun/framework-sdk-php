@@ -7,10 +7,12 @@ namespace XiHan\Framework\Tests\Plugin;
 use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Plugin\Configuration;
 use XiHan\Framework\Plugin\Hooks;
+use XiHan\Framework\Plugin\Logger;
 use XiHan\Framework\Plugin\Options;
 use XiHan\Framework\Plugin\Protocol\V1;
 use XiHan\Framework\Plugin\ResolvedBinding;
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\Internal\Json;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\Result;
@@ -45,6 +47,9 @@ final class BindingPropertiesTest extends TestCase
 
     /** 测试用的另一个属性值 */
     private const string TOKEN = 'property-value-9b2d';
+
+    /** secretBinding() 写成的 JSON：只有绑定名、类型与按升序排列的属性名 */
+    private const string BINDING_JSON = '{"name":"db","type":"connection:relational","propertyNames":["8080","Password","empty","password"]}';
 
     public function testTheAuthorReceivesTheBindingsTheHostWrote(): void
     {
@@ -206,6 +211,77 @@ final class BindingPropertiesTest extends TestCase
         );
     }
 
+    public function testJsonCarriesNamesButNoValues(): void
+    {
+        $binding = self::secretBinding();
+        $cache = new ResolvedBinding('cache', 'cache:distributed', self::VALUE);
+        // 只有绑定名、类型与按升序排列的属性名，纯数字的属性名也是字符串，没有属性时是空数组（lifecycle.md §7.2）
+        $text = self::BINDING_JSON;
+        $bare = '{"name":"cache","type":"cache:distributed","propertyNames":[]}';
+        $configuration = new Configuration(JsonObject::of(['pool' => '4']), ['binding:db'], [$binding, $cache], '/work');
+        $cases = [
+            'a binding' => [$binding, $text],
+            'a list' => [[$binding, $cache], '[' . $text . ',' . $bare . ']'],
+            'a map' => [['db' => $binding], '{"db":' . $text . '}'],
+            'a binding without properties' => [$cache, $bare],
+            'a configuration' => [
+                $configuration,
+                '{"section":{"pool":"4"},"grantedPermissions":["binding:db"],"bindings":[' . $text . ',' . $bare
+                    . '],"workDirectory":"\/work"}',
+            ],
+        ];
+        foreach ($cases as $what => [$value, $expected]) {
+            $written = json_encode($value, JSON_THROW_ON_ERROR);
+            self::assertSame($expected, $written, 'json_encode of ' . $what);
+            self::assertNoSecrets($written, 'json_encode of ' . $what);
+            // SDK 自己的 JSON 写出（日志与线上编码共用的那一份）同样经过 jsonSerialize()
+            $encoded = Json::encode($value);
+            self::assertSame(str_replace('\/', '/', $expected), $encoded, 'Json::encode of ' . $what);
+        }
+        self::assertNoSecrets(
+            json_encode([$configuration], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+            'pretty-printed JSON of a configuration',
+        );
+
+        // 与 TypeScript SDK 的 toJSON 同样的文本：紧凑写法，成员依次是 name、type、propertyNames，属性名按升序
+        $shared = new ResolvedBinding('db', 'connection:relational', self::VALUE, ['username' => 'app', 'password' => self::PASSWORD]);
+        self::assertSame(
+            '{"name":"db","type":"connection:relational","propertyNames":["password","username"]}',
+            json_encode($shared, JSON_THROW_ON_ERROR),
+        );
+    }
+
+    public function testTheLoggerWritesBindingsWithoutValues(): void
+    {
+        // Logger 把顶层的 JsonSerializable 原样交给 JSON 写出，嵌在数组里的绑定与对象的公开属性里的绑定递归写出：
+        // 都经过 jsonSerialize()，只带名字、类型与属性名；顶层的 Configuration 不是 JsonSerializable，写成类名
+        $binding = self::secretBinding();
+        $configuration = new Configuration(JsonObject::of(), [], [$binding]);
+        $stream = fopen('php://memory', 'w+');
+        self::assertIsResource($stream);
+        (new Logger($stream))->with(['binding' => $binding])->information('configured', [
+            'bindings' => [$binding],
+            'named' => ['db' => $binding],
+            'configuration' => $configuration,
+            'nested' => ['configuration' => $configuration],
+        ]);
+        rewind($stream);
+        $line = (string) stream_get_contents($stream);
+        self::assertNoSecrets($line, 'the log line');
+        $summary = json_decode(self::BINDING_JSON, true, flags: JSON_THROW_ON_ERROR);
+        $logged = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($logged);
+        self::assertSame($summary, $logged['binding']);
+        self::assertSame([$summary], $logged['bindings']);
+        self::assertSame(['db' => $summary], $logged['named']);
+        self::assertSame(Configuration::class, $logged['configuration']);
+        $nested = $logged['nested'];
+        self::assertIsArray($nested);
+        self::assertIsArray($nested['configuration']);
+        self::assertSame([$summary], $nested['configuration']['bindings']);
+        self::assertStringContainsString('"binding":' . self::BINDING_JSON, $line);
+    }
+
     public function testTheRuntimeKeepsBindingValuesOutOfItsLogAndTheStatus(): void
     {
         // 配置回调成功、返回失败、抛出三种情况：运行时写的日志与回给宿主的 Status 都不带主值与属性值，作者照常拿到它们
@@ -319,6 +395,19 @@ final class BindingPropertiesTest extends TestCase
         sort($names, SORT_STRING);
 
         return $names;
+    }
+
+    /**
+     * 带主值与几个属性的绑定：只差大小写的、纯数字的、值为空的属性名各一个。
+     */
+    private static function secretBinding(): ResolvedBinding
+    {
+        return new ResolvedBinding(
+            'db',
+            'connection:relational',
+            self::VALUE,
+            ['password' => self::PASSWORD, 'Password' => self::TOKEN, '8080' => self::TOKEN, 'empty' => ''],
+        );
     }
 
     private static function assertNoSecrets(string $text, string $what): void
