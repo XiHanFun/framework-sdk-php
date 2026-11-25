@@ -76,6 +76,12 @@ class Envelope extends \Google\Protobuf\Internal\Message
      * Generated from protobuf field <code>map<string, string> extensions = 10;</code>
      */
     private $extensions;
+    /**
+     * `dataschema`（URI，取值规则见 RFC-0009「信封」）；可空。同一协议版本里的新增字段，较早的对端忽略它（invocation.md §4）。
+     *
+     * Generated from protobuf field <code>string data_schema = 11;</code>
+     */
+    protected $data_schema = '';
 
     /**
      * Constructor.
@@ -103,6 +109,8 @@ class Envelope extends \Google\Protobuf\Internal\Message
      *           `data`。
      *     @type array|\Google\Protobuf\Internal\MapField $extensions
      *           扩展属性。
+     *     @type string $data_schema
+     *           `dataschema`（URI，取值规则见 RFC-0009「信封」）；可空。同一协议版本里的新增字段，较早的对端忽略它（invocation.md §4）。
      * }
      */
     public function __construct($data = null)
@@ -367,6 +375,32 @@ class Envelope extends \Google\Protobuf\Internal\Message
     {
         $arr = GPBUtil::checkMapField($var, \Google\Protobuf\Internal\GPBType::STRING, \Google\Protobuf\Internal\GPBType::STRING);
         $this->extensions = $arr;
+
+        return $this;
+    }
+
+    /**
+     * `dataschema`（URI，取值规则见 RFC-0009「信封」）；可空。同一协议版本里的新增字段，较早的对端忽略它（invocation.md §4）。
+     *
+     * Generated from protobuf field <code>string data_schema = 11;</code>
+     * @return string
+     */
+    public function getDataSchema()
+    {
+        return $this->data_schema;
+    }
+
+    /**
+     * `dataschema`（URI，取值规则见 RFC-0009「信封」）；可空。同一协议版本里的新增字段，较早的对端忽略它（invocation.md §4）。
+     *
+     * Generated from protobuf field <code>string data_schema = 11;</code>
+     * @param string $var
+     * @return $this
+     */
+    public function setDataSchema(string $var)
+    {
+        GPBUtil::checkString($var, true);
+        $this->data_schema = $var;
 
         return $this;
     }

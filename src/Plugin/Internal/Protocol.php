@@ -179,7 +179,7 @@ final class Protocol
     }
 
     /**
-     * 把协议的信封还原。
+     * 把协议的信封还原；`dataschema` 原样，空串是没有（invocation.md §4）。
      */
     public static function envelope(V1\Envelope $envelope): Envelope
     {
@@ -201,11 +201,12 @@ final class Protocol
             $envelope->getTime(),
             $envelope->getSpecVersion(),
             $extensions,
+            $envelope->getDataSchema(),
         );
     }
 
     /**
-     * 把信封编码成协议消息；没有写的 specversion 与 datacontenttype 按 CloudEvents 的缺省补上。
+     * 把信封编码成协议消息；没有写的 specversion 与 datacontenttype 按 CloudEvents 的缺省补上，`dataschema` 原样。
      */
     public static function toProtoEnvelope(Envelope $envelope): V1\Envelope
     {
@@ -218,6 +219,7 @@ final class Protocol
             ->setSubject($envelope->subject)
             ->setTime($envelope->time)
             ->setDataContentType($envelope->dataContentType === '' ? 'application/json' : $envelope->dataContentType)
+            ->setDataSchema($envelope->dataSchema)
             ->setData($envelope->data)
             ->setExtensions(array_map(strval(...), $envelope->extensions));
     }

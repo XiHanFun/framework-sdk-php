@@ -10,6 +10,8 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
  * CloudEvents 1.0 信封的平铺（RFC-0009「信封」，plugin.proto 的 Envelope）。
  *
  * 投递给插件的信封原样交给处理器；插件发布的信封经 Host::publish() 交给宿主的消息代理。
+ *
+ * `dataSchema` 是 CloudEvents 的 `dataschema`（ADR-0305），收到与发布都原样，SDK 不核对、不改写；空串是没有。
  */
 final readonly class Envelope
 {
@@ -34,6 +36,7 @@ final readonly class Envelope
      * @param string $time `time`（RFC 3339）；可空
      * @param string $specVersion `specversion`
      * @param array<array-key, mixed> $extensions 扩展属性：名字 → 字符串值
+     * @param string $dataSchema `dataschema`（ADR-0305）；可空，原样发布
      *
      * @throws InvalidArgumentException 扩展属性的值不是字符串（PRIMITIVES_VALIDATION_001）
      */
@@ -48,6 +51,7 @@ final readonly class Envelope
         public string $time = '',
         public string $specVersion = '1.0',
         array $extensions = [],
+        public string $dataSchema = '',
     ) {
         $checked = [];
         foreach ($extensions as $name => $value) {
