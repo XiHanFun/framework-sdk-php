@@ -7,6 +7,8 @@ namespace XiHan\Framework\Plugin\Internal;
 /**
  * InvocationMetadata.deadline 的读写与生效的截止时间（invocation.md §2，向量 conformance/vectors/plugin/deadlines.json）。
  *
+ * parse() 也是宿主写来的 Envelope.time 的读法（RFC-0003 规则 8，invocation.md §4），两处共用一条文法。
+ *
  * 读法严格：`^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?([Zz]|[+-][0-9]{2}:[0-9]{2})\z`，
  * 年 0001–9999、月日按公历、时分秒不越界（不认闰秒）、偏移的时 00–23 与分 00–59，换算成 UTC 之后（不计小数）在
  * 0001-01-01T00:00:00 到 9999-12-31T23:59:59 之间；PHP 的时刻精确到微秒，更细的小数截断、不进位。写法是 UTC、七位小数、

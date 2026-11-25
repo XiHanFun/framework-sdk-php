@@ -32,6 +32,8 @@ final class VectorCoverageTest extends TestCase
         'plugin/callback-status.json',
         // Plugin\DeadlineVectorsTest
         'plugin/deadlines.json',
+        // Plugin\EnvelopeTest（host 档；SDK 读宿主写来的 time 是同一条文法）
+        'plugin/envelope-times.json',
         // Plugin\ErrorReadingTest
         'plugin/error-reading.json',
         // Plugin\HandshakeVectorsTest

@@ -67,6 +67,9 @@ final class RuntimeTest extends TestCase
     /** 测试插件在 Configure 里读到的问候语 */
     private string $greeting = '';
 
+    /** 处理器最近收到的信封 */
+    private ?Envelope $delivered = null;
+
     /** @var \Closure(): Health 当前的健康回调 */
     private \Closure $health;
 
@@ -208,6 +211,12 @@ final class RuntimeTest extends TestCase
             // 投递：没有信封与不认识的方式是 InvalidArgument
             self::assertSame(GrpcStatus::INVALID_ARGUMENT, Harness::grpcStatus(fn () => $harness->deliver(null)));
             self::assertSame(GrpcStatus::INVALID_ARGUMENT, Harness::grpcStatus(fn () => $harness->deliver(self::envelope('items.changed', 'e1', 'x'), 'bogus')));
+            // 宿主写来的 time 读不出：不交给作者，也不当作没有时间；先于找订阅（invocation.md §4）
+            foreach (['items.changed', 'nobody.listens'] as $topic) {
+                $unreadable = self::envelope($topic, 'e1', 'x')->setTime('2026-11-25T03:25:00');
+                self::assertSame(GrpcStatus::INVALID_ARGUMENT, Harness::grpcStatus(fn () => $harness->deliver($unreadable)), $topic);
+            }
+            self::assertSame([], $this->events, 'an envelope whose time cannot be read reaches no handler');
             self::assertSame([
                 'code' => 'KERNEL_NOTFOUND_001',
                 'key' => 'plugins.event.unsubscribed',
@@ -230,6 +239,18 @@ final class RuntimeTest extends TestCase
             self::assertSame(['code' => 'KERNEL_UNEXPECTED_001', 'key' => 'kernel.invocation.unhandled_exception', 'text' => '', 'details' => null], Harness::error($thrown->getStatus()?->getError()));
             self::assertTrue($harness->deliver(self::envelope('items.changed', 'e3', 'y'), 'broadcast')->getStatus()?->getOk());
             self::assertSame(['all:throw', 'y:e3'], $this->events);
+
+            // 时间换算成 UTC、比微秒更细的小数截断，dataschema 原样、不裁剪；空串都是没有
+            $timed = self::envelope('items.changed', 'e4', 'z')->setTime('2026-11-25T11:25:00.1234567+08:00')
+                ->setDataSchema(' https://example.com/schemas/item.json ');
+            self::assertTrue($harness->deliver($timed)->getStatus()?->getOk());
+            self::assertNotNull($this->delivered);
+            self::assertSame('2026-11-25T03:25:00.123456+00:00', $this->delivered->time?->format('Y-m-d\TH:i:s.uP'));
+            self::assertSame(' https://example.com/schemas/item.json ', $this->delivered->dataSchema);
+            self::assertTrue($harness->deliver(self::envelope('items.changed', 'e5', 'z'))->getStatus()?->getOk());
+            self::assertNotNull($this->delivered);
+            self::assertNull($this->delivered->time);
+            self::assertSame('', $this->delivered->dataSchema);
         } finally {
             $harness->close();
         }
@@ -594,6 +615,7 @@ final class RuntimeTest extends TestCase
         $record = function (string $prefix): \Closure {
             return function (Context $context, Envelope $envelope) use ($prefix): Result {
                 $this->events[] = $prefix . ':' . $envelope->id;
+                $this->delivered = $envelope;
 
                 return match ($envelope->id) {
                     'fail' => Result::fail(Error::literal('ITEMS_UNAVAILABLE_001', 'busy')),

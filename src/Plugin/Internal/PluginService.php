@@ -477,11 +477,11 @@ final class PluginService
     }
 
     /**
-     * 投递一条消息（invocation.md §4）：没有信封或方式不认识 → INVALID_ARGUMENT；按（主题，方式，类型）找订阅，一个也没有
-     * → plugins.event.unsubscribed；不可服务 → PLUGINS_UNAVAILABLE_001；然后还原上下文，匹配的订阅按声明顺序依次交给各自的
-     * 处理器，第一个失败即终止并作为结果。
+     * 投递一条消息（invocation.md §4）：没有信封、方式不认识或信封的 `time` 不合 RFC-0003 规则 8 → INVALID_ARGUMENT；按
+     * （主题，方式，类型）找订阅，一个也没有 → plugins.event.unsubscribed；不可服务 → PLUGINS_UNAVAILABLE_001；然后还原上下文，
+     * 匹配的订阅按声明顺序依次交给各自的处理器，第一个失败即终止并作为结果。
      *
-     * @throws GrpcException 没有信封或方式不认识（INVALID_ARGUMENT）
+     * @throws GrpcException 没有信封、方式不认识或 `time` 读不出（INVALID_ARGUMENT）
      */
     private function handleEvent(ServerCall $call): void
     {
@@ -499,6 +499,16 @@ final class PluginService
             );
         }
         $envelope = Protocol::envelope($wire);
+        // 宿主写来的 time 一律合文法：读不出是宿主的问题，不交给作者，也不当作没有时间
+        if ($envelope === null) {
+            throw new GrpcException(
+                GrpcStatus::INVALID_ARGUMENT,
+                sprintf(
+                    "The envelope time '%s' is not an RFC 3339 date-time as RFC-0003 rule 8 reads it.",
+                    $wire->getTime(),
+                ),
+            );
+        }
         $matches = array_values(array_filter(
             $this->options->subscriptions,
             static fn (Subscription $subscription): bool => $subscription->accepts($envelope, $mode),

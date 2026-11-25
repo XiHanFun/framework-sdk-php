@@ -179,10 +179,18 @@ final class Protocol
     }
 
     /**
-     * 把协议的信封还原；`dataschema` 原样，空串是没有（invocation.md §4）。
+     * 把宿主写来的信封还原（invocation.md §4）：`time` 按 RFC-0003 规则 8 读成 UTC 时刻（比微秒更细的小数截断），`dataschema`
+     * 原样，两者的空串都是没有；`time` 读不出时为 null。
      */
-    public static function envelope(V1\Envelope $envelope): Envelope
+    public static function envelope(V1\Envelope $envelope): ?Envelope
     {
+        $time = null;
+        if ($envelope->getTime() !== '') {
+            $time = Deadlines::parse($envelope->getTime());
+            if ($time === null) {
+                return null;
+            }
+        }
         $extensions = [];
         foreach ($envelope->getExtensions() as $name => $value) {
             if ((is_string($name) || is_int($name)) && is_string($value)) {
@@ -198,7 +206,7 @@ final class Protocol
             $envelope->getData(),
             $envelope->getDataContentType(),
             $envelope->getSubject(),
-            $envelope->getTime(),
+            $time,
             $envelope->getSpecVersion(),
             $extensions,
             $envelope->getDataSchema(),
@@ -206,7 +214,8 @@ final class Protocol
     }
 
     /**
-     * 把信封编码成协议消息；没有写的 specversion 与 datacontenttype 按 CloudEvents 的缺省补上，`dataschema` 原样。
+     * 把信封编码成协议消息；没有写的 specversion 与 datacontenttype 按 CloudEvents 的缺省补上，`time` 按 formatTime() 写，
+     * `dataschema` 原样，没有的写空串。
      */
     public static function toProtoEnvelope(Envelope $envelope): V1\Envelope
     {
@@ -217,11 +226,26 @@ final class Protocol
             ->setType($envelope->type)
             ->setSpecVersion($envelope->specVersion === '' ? '1.0' : $envelope->specVersion)
             ->setSubject($envelope->subject)
-            ->setTime($envelope->time)
+            ->setTime($envelope->time === null ? '' : self::formatTime($envelope->time))
             ->setDataContentType($envelope->dataContentType === '' ? 'application/json' : $envelope->dataContentType)
             ->setDataSchema($envelope->dataSchema)
             ->setData($envelope->data)
             ->setExtensions(array_map(strval(...), $envelope->extensions));
+    }
+
+    /**
+     * 把信封的 `time` 写成 RFC 3339（RFC-0009「信封」第 3 条）：换算成 UTC、以 `Z` 结尾，秒的小数去掉末尾的 0，全为 0 时不写
+     * 小数点，最多六位（PHP 的时刻只到微秒），如 `2026-11-25T03:25:00.5Z`；六个 SDK 对同一时刻写出同一份文本（精度以内）。
+     * 年份至少四位；不在本地核对（ADR-0306），9999 年之后照写五位以上的年份，公元前照写 `0000` 与带负号的年份（PHP 8.2 起
+     * `Y` 的写法，与 Go 相同），由宿主拒绝那一项。
+     */
+    public static function formatTime(\DateTimeImmutable $time): string
+    {
+        $utc = $time->setTimezone(new \DateTimeZone('UTC'));
+        $micros = (int) $utc->format('u');
+        $fraction = $micros === 0 ? '' : '.' . rtrim(sprintf('%06d', $micros), '0');
+
+        return $utc->format('Y-m-d\TH:i:s') . $fraction . 'Z';
     }
 
     /**

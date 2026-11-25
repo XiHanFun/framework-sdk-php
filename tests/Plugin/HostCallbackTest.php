@@ -65,7 +65,15 @@ final class HostCallbackTest extends TestCase
                 $other = $client->invoke($context->withBaggage('xihan.tenant', 'intruder'), 'orders.get');
                 // 信封的 xihantenant 不在本地核对，交给宿主逐项判定
                 $published = $client->publish($context, [
-                    new Envelope('orders.changed', 'e1', 'urn:test', 'x'),
+                    // 第一项带时间（东八区的时刻）与 dataschema，写出时换算成 UTC、原样
+                    new Envelope(
+                        'orders.changed',
+                        'e1',
+                        'urn:test',
+                        'x',
+                        time: new \DateTimeImmutable('2026-11-25T11:25:00.5+08:00'),
+                        dataSchema: 'urn:schema:orders',
+                    ),
                     new Envelope('orders.changed', 'e2', 'urn:test', 'x', extensions: ['xihantenant' => 'intruder']),
                 ]);
                 $batch = $client->publish($context->withBaggage('xihan.tenant', 'intruder'), [
@@ -111,6 +119,12 @@ final class HostCallbackTest extends TestCase
             $publish = $host->received[1]['request'];
             self::assertInstanceOf(V1\PublishRequest::class, $publish);
             self::assertCount(2, $publish->getEnvelopes());
+            // time 换算成 UTC、以 Z 结尾，dataschema 原样；没有的写空串
+            $written = array_map(
+                static fn (V1\Envelope $envelope): string => $envelope->getTime() . '|' . $envelope->getDataSchema(),
+                iterator_to_array($publish->getEnvelopes(), false),
+            );
+            self::assertSame(['2026-11-25T03:25:00.5Z|urn:schema:orders', '|'], $written);
         } finally {
             $harness->close();
             $host->close();

@@ -133,6 +133,7 @@ final class ProtocolTest extends TestCase
         self::assertSame('1.0', $proto->getSpecVersion());
         self::assertSame('application/json', $proto->getDataContentType());
         $envelope = Protocol::envelope($proto);
+        self::assertNotNull($envelope);
         self::assertSame(['xihantenant' => 't1'], $envelope->extensions);
         self::assertSame('e1', $envelope->id);
 
