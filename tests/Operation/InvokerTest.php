@@ -284,6 +284,44 @@ final class InvokerTest extends TestCase
         self::assertSame('[2.0,-0.0,1.0e+17]', $invoker->invoke(Context::create(), new Request('floats.get'))->payload);
     }
 
+    public function testResponsesThatAreNotValidUtf8AreNotWritten(): void
+    {
+        // 响应里的字符串写不成合法的 JSON 文本即写不出（RFC-0011 规则 10「编码」，ADR-0318）：值、成员名、数组的键与元素里不是合法
+        // UTF-8 的字节（编码成 UTF-8 的代理项、单个 0xFF）都以 unhandled_exception 结束，不带 inner，没有载荷，不写成 U+FFFD
+        $surrogate = "a\xED\xA0\x80";
+        $unwritable = [];
+        foreach (['surrogate' => $surrogate, 'byte' => "\xFF"] as $name => $bytes) {
+            $unwritable["values.{$name}"] = ['value' => $bytes];
+            $unwritable["keys.{$name}"] = [$bytes => 1];
+            $unwritable["elements.{$name}"] = ['items' => ['b', $bytes]];
+            $unwritable["nested-keys.{$name}"] = ['a' => [[$bytes => 'c']]];
+            $unwritable["members.{$name}"] = JsonObject::of([$bytes => 1]);
+            $unwritable["properties.{$name}"] = (object) [$bytes => 1];
+        }
+        $text = "中文\u{1F600}\u{FFFD}";
+        $registry = new Registry();
+        foreach ($unwritable as $id => $value) {
+            $registry->add(new Contract($id), static fn (Context $context, JsonObject $request): Result => Result::ok($value));
+        }
+        $registry->add(new Contract('values.text'), static fn (Context $context, JsonObject $request): Result => Result::ok([$text => [$text, 'é']]));
+        $invoker = new Invoker($registry);
+        foreach (array_keys($unwritable) as $id) {
+            $descriptor = $registry->find($id);
+            self::assertNotNull($descriptor, $id);
+            foreach ([$invoker->invoke(Context::create(), new Request($id)), $descriptor->execute(Context::create(), '')] as $response) {
+                $error = $response->outcome->error();
+                self::assertNotNull($error, $id);
+                self::assertSame(OperationErrors::UNEXPECTED, $error->code, $id);
+                self::assertSame('kernel.invocation.unhandled_exception', $error->messageKey, $id);
+                self::assertSame([], $error->details, $id);
+                self::assertNull($error->inner, $id);
+                self::assertNull($response->payload, $id);
+            }
+        }
+        // 多字节文本与真正的 U+FFFD 照常写出
+        self::assertSame('{"' . $text . '":["' . $text . '","é"]}', $invoker->invoke(Context::create(), new Request('values.text'))->payload);
+    }
+
     public function testCallsRestoreTheItemsTheyReplace(): void
     {
         $registry = new Registry();

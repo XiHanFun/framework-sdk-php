@@ -267,6 +267,36 @@ final class RuntimeTest extends TestCase
         }
     }
 
+    public function testResponsesThatAreNotValidJsonTextFailInThePlugin(): void
+    {
+        // 类型化的应答写不成合法的 JSON 文本即写不出（invocation.md §1「插件一侧写出应答」，ADR-0318）：值、键与数组元素里不是合法
+        // UTF-8 的字节经 Status.error 报 unhandled_exception，没有参数、不带 inner，payload 为空，不写成 U+FFFD 交给宿主
+        $harness = $this->started();
+        try {
+            foreach (['surrogate', 'byte-key', 'element'] as $id) {
+                $failed = $harness->invoke('items.get', '{"id":"' . $id . '"}');
+                $status = $failed->getStatus();
+                self::assertNotNull($status, $id);
+                self::assertFalse($status->getOk(), $id);
+                self::assertSame('', $failed->getPayload(), $id);
+                $error = $status->getError();
+                self::assertSame(
+                    ['code' => 'KERNEL_UNEXPECTED_001', 'key' => 'kernel.invocation.unhandled_exception', 'text' => '', 'details' => null],
+                    Harness::error($error),
+                    $id,
+                );
+                self::assertFalse($error?->hasInner(), $id);
+            }
+            // 多字节文本与真正的 U+FFFD 照常写出
+            $text = "中文\u{1F600}\u{FFFD}";
+            $written = $harness->invoke('items.get', '{"id":"' . $text . '"}');
+            self::assertTrue($written->getStatus()?->getOk());
+            self::assertSame('{"id":"' . $text . '","tenant":null,"greeting":"hi"}', $written->getPayload());
+        } finally {
+            $harness->close();
+        }
+    }
+
     public function testSessionTokenIsCheckedBeforeAnything(): void
     {
         $harness = (new Harness());
@@ -592,7 +622,7 @@ final class RuntimeTest extends TestCase
 
     /**
      * 组装测试插件：items.get 回显、items.slow 等到取消、items.literal 返回自由文本错误；订阅 items.changed 的全部类型
-     * （竞争）、类型 x（竞争）与类型 y（广播）。
+     * （竞争）、类型 x（竞争）与类型 y（广播）。items.get 对几个特定的 id 交回写不出的应答。
      *
      * @param array<string, string|null> $environment
      * @param list<Subscription>|null $subscriptions
@@ -609,6 +639,16 @@ final class RuntimeTest extends TestCase
         $registry->add(new Contract('items.get', Stability::Experimental), function (Context $context, JsonObject $request): Result {
             if ($request['id'] === 'missing') {
                 return Result::fail(Error::notFound('ITEMS_NOTFOUND_001', 'items.item.missing', ['id' => 'missing']));
+            }
+            // 写不成合法 JSON 文本的应答：值、键与数组元素里不是合法 UTF-8 的字节
+            $unwritable = match ($request['id']) {
+                'surrogate' => ['id' => "a\xED\xA0\x80"],
+                'byte-key' => ["\xFF" => 'b'],
+                'element' => ['items' => ['c', "\xFF"]],
+                default => null,
+            };
+            if ($unwritable !== null) {
+                return Result::ok($unwritable);
             }
 
             return Result::ok(['id' => $request['id'], 'tenant' => $context->tenant(), 'greeting' => $this->greeting]);
