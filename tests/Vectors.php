@@ -115,6 +115,60 @@ final class Vectors
     }
 
     /**
+     * 按 UTF-16 码元组字节（RFC-0012「一致性」的写法，PHP 的字符串是字节）：成对的代理项合成一个码点写成 4 字节的 UTF-8，
+     * 孤立的代理项按 WTF-8 写成 `ED A0 80` 这样的 3 个字节（不是合法的 UTF-8），其余码元照 UTF-8 写。JSON 字符串写不出孤立的
+     * 代理项，这类样例在向量里以 `utf16` 列出四位十六进制的码元。
+     *
+     * @param list<string> $units 码元，如 `['0061', 'D800']`
+     */
+    public static function wtf8(array $units): string
+    {
+        $bytes = '';
+        $count = count($units);
+        for ($index = 0; $index < $count; $index++) {
+            $unit = (int) hexdec($units[$index]);
+            $next = $index + 1 < $count ? (int) hexdec($units[$index + 1]) : -1;
+            if ($unit >= 0xD800 && $unit <= 0xDBFF && $next >= 0xDC00 && $next <= 0xDFFF) {
+                $point = 0x10000 + (($unit - 0xD800) << 10) + ($next - 0xDC00);
+                $bytes .= chr(0xF0 | ($point >> 18)) . chr(0x80 | (($point >> 12) & 0x3F))
+                    . chr(0x80 | (($point >> 6) & 0x3F)) . chr(0x80 | ($point & 0x3F));
+                $index++;
+                continue;
+            }
+            if ($unit < 0x80) {
+                $bytes .= chr($unit);
+            } elseif ($unit < 0x800) {
+                $bytes .= chr(0xC0 | ($unit >> 6)) . chr(0x80 | ($unit & 0x3F));
+            } else {
+                $bytes .= chr(0xE0 | ($unit >> 12)) . chr(0x80 | (($unit >> 6) & 0x3F)) . chr(0x80 | ($unit & 0x3F));
+            }
+        }
+
+        return $bytes;
+    }
+
+    /**
+     * 取向量里以 `utf16` 列出码元的样例，按 wtf8() 组成字节串。
+     *
+     * @param array<array-key, mixed> $vector
+     *
+     * @return list<string>
+     */
+    public static function utf16Strings(array $vector, string $field): array
+    {
+        $strings = [];
+        foreach (self::objects($vector, $field) as $case) {
+            $units = $case['utf16'] ?? null;
+            if (!is_array($units) || !array_is_list($units)) {
+                throw new \RuntimeException(sprintf("Every item of the vector field '%s' needs a 'utf16' list.", $field));
+            }
+            $strings[] = self::wtf8(self::strings(['units' => $units], 'units'));
+        }
+
+        return $strings;
+    }
+
+    /**
      * 取向量里的一个对象数组字段。
      *
      * @param array<array-key, mixed> $vector

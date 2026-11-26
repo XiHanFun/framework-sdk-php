@@ -105,8 +105,15 @@ final class VectorsTest extends TestCase
     {
         $values = Vectors::primitives('baggage-keys')['values'] ?? null;
         self::assertIsArray($values);
-        $acceptable = Vectors::strings($values, 'acceptable');
-        $unacceptable = Vectors::strings($values, 'unacceptable');
+        // 孤立的代理项（ADR-0321）以 UTF-16 码元列出，按 WTF-8 组成字节，与以字符串列出的同一条约束一起回放：PHP 的字符串是
+        // 字节，值必须是合法的 UTF-8，编成 UTF-8 的代理项不合；成对的码元合成平面以外的一个字符，照常合法
+        $acceptable = [...Vectors::strings($values, 'acceptable'), ...Vectors::utf16Strings($values, 'acceptableUtf16')];
+        $unacceptable = [
+            ...Vectors::strings($values, 'unacceptable'),
+            ...Vectors::utf16Strings($values, 'unacceptableUtf16'),
+        ];
+        self::assertSame("t\u{1F600}", Vectors::wtf8(['0074', 'D83D', 'DE00']));
+        self::assertSame("a\xED\xA0\x80b", Vectors::wtf8(['0061', 'D800', '0062']));
         foreach ($acceptable as $value) {
             self::assertTrue(BaggageKeys::isAcceptableValue($value), sprintf('%s must be acceptable', json_encode($value)));
         }
