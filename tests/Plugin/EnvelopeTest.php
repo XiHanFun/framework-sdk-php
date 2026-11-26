@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace XiHan\Framework\Tests\Plugin;
 
-use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use XiHan\Framework\Plugin\Envelope;
 use XiHan\Framework\Plugin\Internal\Deadlines;
@@ -13,88 +12,20 @@ use XiHan\Framework\Plugin\Protocol\V1;
 use XiHan\Framework\Tests\Vectors;
 
 /**
- * 信封的 `time` 与 `dataschema`（invocation.md §4，RFC-0009「信封」第 3 条，ADR-0305、ADR-0306）：写出的文本、读入、往返与
- * 没有时间；回放 plugin 档的 conformance/vectors/plugin/envelope-times.json（宿主读插件写来的 `time` 与 SDK 读宿主写来的是
- * 同一条文法）与 sdk-envelope-times.json（SDK 一侧按时间类型精度的写出与读入，ADR-0310）。PHP 的时刻精确到微秒。
+ * 信封的 `time` 与 `dataschema`（invocation.md §4，RFC-0009「信封」第 3 条，ADR-0305、ADR-0306）：没有时间、越界的时刻与
+ * 时刻的拷贝；写出与读入的用例回放 plugin 档的 conformance/vectors/plugin/envelope-times.json（宿主读插件写来的 `time` 与 SDK
+ * 读宿主写来的是同一条文法）与 sdk-envelope-times.json（SDK 一侧按时间类型精度的写出与读入，ADR-0310）。PHP 的时刻精确到微秒。
  */
 final class EnvelopeTest extends TestCase
 {
     /** PHP 时刻的精度在 sdk-envelope-times.json 里的名字：微秒，写出时最多六位小数 */
     private const string PRECISION = 'microseconds';
 
-    /**
-     * 六个 SDK 共用的写出用例：作者给的时刻（按 PHP 的解析器读）与 SDK 写出的 `time`。
-     *
-     * @return iterable<string, array{string, string}>
-     */
-    public static function writtenTimes(): iterable
+    public function testAnEnvelopeWithoutATimeHasNoneAndABlankTimeIsUnreadable(): void
     {
-        yield 'milliseconds' => ['2026-11-25T03:25:00.123Z', '2026-11-25T03:25:00.123Z'];
-        yield 'half a second' => ['2026-11-25T03:25:00.500Z', '2026-11-25T03:25:00.5Z'];
-        yield 'trailing zero' => ['2026-11-25T03:25:00.120Z', '2026-11-25T03:25:00.12Z'];
-        yield 'whole second' => ['2026-11-25T03:25:00Z', '2026-11-25T03:25:00Z'];
-        yield 'east of utc' => ['2026-11-25T11:25:00.25+08:00', '2026-11-25T03:25:00.25Z'];
-        yield 'west of utc' => ['2026-11-24T22:25:00-05:00', '2026-11-25T03:25:00Z'];
-        yield 'previous year' => ['2026-01-01T00:30:00+01:00', '2025-12-31T23:30:00Z'];
-        yield 'first year' => ['0001-01-01T00:00:00Z', '0001-01-01T00:00:00Z'];
-        // 微秒是 PHP 的精度
-        yield 'one microsecond' => ['2026-11-25T03:25:00.000001Z', '2026-11-25T03:25:00.000001Z'];
-        yield 'microseconds' => ['2026-11-25T03:25:00.123456Z', '2026-11-25T03:25:00.123456Z'];
-        yield 'last microsecond' => ['9999-12-31T23:59:59.999999Z', '9999-12-31T23:59:59.999999Z'];
-    }
-
-    /**
-     * 六个 SDK 共用的读入用例：宿主写来的 `time` 与作者收到的 UTC 时刻（比微秒更细的小数截断），null 为没有时间。
-     *
-     * @return iterable<string, array{string, string|null}>
-     */
-    public static function readTimes(): iterable
-    {
-        yield 'offset' => ['2026-11-25T11:25:00+08:00', '2026-11-25T03:25:00.000000Z'];
-        yield 'negative offset' => ['2026-11-24T22:25:00.25-05:00', '2026-11-25T03:25:00.250000Z'];
-        yield 'lower case' => ['2026-11-25t03:25:00z', '2026-11-25T03:25:00.000000Z'];
-        yield 'seven digits' => ['2026-11-25T03:25:00.1234567+00:00', '2026-11-25T03:25:00.123456Z'];
-        yield 'nine digits' => ['2026-11-25T03:25:00.123456789Z', '2026-11-25T03:25:00.123456Z'];
-        yield 'last instant' => ['9999-12-31T23:59:59.999999999Z', '9999-12-31T23:59:59.999999Z'];
-        yield 'no time' => ['', null];
-    }
-
-    #[DataProvider('writtenTimes')]
-    public function testTimesAreWrittenInUtcWithTheTrailingZerosOfTheFractionDropped(string $time, string $text): void
-    {
-        $given = new \DateTimeImmutable($time);
-        self::assertSame($text, Protocol::formatTime($given));
-        self::assertSame($text, Protocol::toProtoEnvelope(self::envelope($given))->getTime());
-        // 往返：写出的文本读回同一个时刻
-        self::assertSame(self::utc($given), self::deliveredTime($text));
-    }
-
-    #[DataProvider('readTimes')]
-    public function testTimesFromTheHostAreReadInUtcAndTruncatedToMicroseconds(string $text, ?string $utc): void
-    {
-        self::assertSame($utc, self::deliveredTime($text));
-    }
-
-    public function testTimesOutsideTheGrammarAreNotRead(): void
-    {
-        // 闰秒、没有偏移、空格代替 T、十位小数、只有空白
-        $invalid = [
-            '2026-11-25T03:25:60Z',
-            '2026-11-25T03:25:00',
-            '2026-11-25 03:25:00Z',
-            '2026-11-25T03:25:00.1234567890Z',
-            ' ',
-        ];
-        foreach ($invalid as $text) {
-            self::assertNull(self::delivered($text), $text);
-        }
-    }
-
-    public function testEnvelopesWithoutATimeWriteAnEmptyText(): void
-    {
-        $envelope = new Envelope('orders', 'e1', 'urn:test', 'orders.created');
-        self::assertNull($envelope->time);
-        self::assertSame('', Protocol::toProtoEnvelope($envelope)->getTime());
+        // 写出与读入的各条用例由下面两个向量回放（ADR-0310）；向量里没有的：不给时间即没有，只有空白不当作没有时间
+        self::assertNull((new Envelope('orders', 'e1', 'urn:test', 'orders.created'))->time);
+        self::assertNull(self::delivered(' '));
     }
 
     public function testTimesOutsideTheFourDigitYearsAreWrittenForTheHostToReject(): void
