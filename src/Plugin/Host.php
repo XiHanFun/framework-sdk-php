@@ -46,6 +46,9 @@ final class Host
 
     private readonly ?GrpcClient $client;
 
+    /** close() 之后为真：回调不发请求、不重新连接（invocation.md §5，ADR-0328） */
+    private bool $closed = false;
+
     /** @var list<string> 宿主在 Configure 里授予的权限；Configure 之前什么都没有授予 */
     private array $granted = [];
 
@@ -97,6 +100,7 @@ final class Host
      * 以插件身份经宿主的完整管道调用一个操作（需要权限 capability:kernel.pipeline）。
      *
      * 上下文的截止时间（gRPC 截止时间与它相同）、追踪与已登记的 Baggage 随调用传给宿主，调用方的取消即取消回调。
+     * 客户端已关闭（运行时收尾）之后不发请求、不重新连接，结果为 plugins.host.unavailable，排在本地核对之后（ADR-0328）。
      *
      * @param string $payload 请求的 JSON；空等价于 `{}`
      */
@@ -105,6 +109,9 @@ final class Host
         $refused = $this->refuse($context, CallbackFailures::INVOKE, $operation);
         if ($refused !== null) {
             return new Response(Result::fail($refused), null);
+        }
+        if ($this->closed) {
+            return new Response(Result::fail($this->closedError(CallbackFailures::INVOKE, $operation)), null);
         }
         $request = (new V1\InvokeRequest())
             ->setOperation($operation)
@@ -134,7 +141,8 @@ final class Host
      * 经宿主的消息代理发布消息（需要权限 capability:messaging.queue），结果与信封一一对应；空列表不发给宿主。
      *
      * 宿主以回调上下文为调用上下文发布，从上下文补齐信封缺的扩展属性（租户、主体、关联 ID、区域、追踪，RFC-0009）。
-     * 本地的两项核对与 RPC 的失败都是整批的结果；信封的 xihantenant 扩展不在本地核对，由宿主逐项判定。
+     * 本地的两项核对与 RPC 的失败都是整批的结果；信封的 xihantenant 扩展不在本地核对，由宿主逐项判定。客户端已关闭之后
+     * 不发请求，每一项都是 plugins.host.unavailable（ADR-0328）。
      *
      * @param list<Envelope> $envelopes
      *
@@ -149,6 +157,9 @@ final class Host
         $refused = $this->refuse($context, CallbackFailures::PUBLISH, '');
         if ($refused !== null) {
             return array_fill(0, $count, Result::fail($refused));
+        }
+        if ($this->closed) {
+            return array_fill(0, $count, Result::fail($this->closedError(CallbackFailures::PUBLISH, '')));
         }
         $request = (new V1\PublishRequest())
             ->setEnvelopes(array_map(Protocol::toProtoEnvelope(...), $envelopes))
@@ -199,13 +210,31 @@ final class Host
     }
 
     /**
-     * 断开与宿主的连接。
+     * 断开与宿主的连接；之后的回调不发请求、不重新连接，以 PLUGINS_UNAVAILABLE_001 + plugins.host.unavailable 失败，
+     * 排在本地核对之后（invocation.md §5，ADR-0328）。可以调用多次；进行中的回调被切断，结果按映射表的 Cancelled 一行。
      *
      * @internal
      */
     public function close(): void
     {
+        // 先记下已关闭再关连接：GrpcClient 的连接是惰性的，之后的回调会重新连上，所以由这里拦下
+        $this->closed = true;
         $this->client?->close();
+    }
+
+    /**
+     * 客户端已关闭之后的回调：与映射表「Unavailable；连接失败」那一行相同（invocation.md §5，ADR-0328）。
+     */
+    private function closedError(string $rpc, string $operation): Error
+    {
+        return CallbackFailures::map(
+            $rpc,
+            GrpcStatus::UNAVAILABLE,
+            'the host client is closed',
+            false,
+            $this->pluginId,
+            $operation,
+        );
     }
 
     /**

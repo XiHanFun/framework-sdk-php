@@ -165,6 +165,86 @@ final class HostCallbackTest extends TestCase
         }
     }
 
+    public function testCallbacksAfterTheClientIsClosedAreUnavailableWithoutDialingAgain(): void
+    {
+        // invocation.md §5（ADR-0328）：释放回调客户端之后的回调不发请求、不重新连接，结果是 plugins.host.unavailable；
+        // 它是发出这一步本身，排在本地核对之后（PHP 的载荷与 data 是字节，没有要编码的一步）。以前 close() 之后的回调
+        // 懒连接、照常发出
+        $host = new FakeHost();
+        $harness = $this->started((string) $host->endpoint());
+        try {
+            $this->scenario = static function (Context $context, Host $client): mixed {
+                $before = self::describe($client->invoke($context, 'orders.get')->outcome->error());
+                $client->close();
+                $client->close();
+                $source = new CancellationSource();
+                $source->cancel();
+                $cancelled = Context::create(cancellation: $source->cancellation(), baggage: $context->baggage());
+                $describe = static fn (Result $result): string => self::describe($result->error());
+                $envelopes = [new Envelope('a.b', '1', 'urn:x', 't'), new Envelope('a.b', '2', 'urn:x', 't')];
+
+                return [
+                    'before' => $before,
+                    'invoke' => self::describe($client->invoke($context, 'orders.get', '{"id":1}')->outcome->error()),
+                    'publish' => array_map($describe, $client->publish($context, $envelopes)),
+                    'empty' => $client->publish($context, []),
+                    'cancelled' => self::describe($client->invoke($cancelled, 'orders.get')->outcome->error()),
+                    'tenant' => array_map(
+                        $describe,
+                        $client->publish($context->withBaggage('xihan.tenant', 'intruder'), $envelopes),
+                    ),
+                ];
+            };
+            $result = self::payload($harness->invoke('relay.run', '{}', ['xihan.tenant' => 't1']));
+            self::assertSame('ok', $result['before']);
+            $closed = 'PLUGINS_UNAVAILABLE_001 plugins.host.unavailable '
+                . '{"id":"xihan.tests.relay","reason":"Unavailable: the host client is closed"}';
+            self::assertSame($closed, $result['invoke']);
+            self::assertSame([$closed, $closed], $result['publish']);
+            self::assertSame([], $result['empty']);
+            // 本地核对仍在前面
+            self::assertSame('KERNEL_CANCELLED_001 kernel.invocation.cancelled null', $result['cancelled']);
+            $denied = 'PLUGINS_DENIED_002 plugins.callback.tenant_denied {"id":"xihan.tests.relay","tenant":"intruder"}';
+            self::assertSame([$denied, $denied], $result['tenant']);
+            // 只有关闭之前的那一次到了宿主
+            self::assertSame(['Invoke'], array_column($host->received, 'method'));
+        } finally {
+            $harness->close();
+            $host->close();
+        }
+    }
+
+    public function testClosingTheClientCutsCallbacksInFlightAsUnavailable(): void
+    {
+        // invocation.md §5（ADR-0328）：回调途中客户端被释放、切断了进行中的回调，结果同样是「Cancelled，取消信号没有触发」那一行
+        $host = new FakeHost(static function (V1\InvokeRequest $request, ServerCall $call): void {
+            try {
+                delay(5, cancellation: $call->cancellation());
+            } catch (CancelledException) {
+                return;
+            }
+            $call->send((new V1\InvokeResponse())->setStatus((new V1\Status())->setOk(true))->serializeToString());
+        });
+        $harness = $this->started((string) $host->endpoint());
+        try {
+            $this->scenario = static function (Context $context, Host $client): mixed {
+                EventLoop::delay(0.2, static fn () => $client->close());
+
+                return ['cut' => self::describe($client->invoke($context, 'orders.get')->outcome->error())];
+            };
+            $result = self::payload($harness->invoke('relay.run', '{}'));
+            self::assertIsString($result['cut']);
+            self::assertStringStartsWith(
+                'PLUGINS_UNAVAILABLE_001 plugins.host.unavailable {"id":"xihan.tests.relay","reason":"Cancelled: ',
+                $result['cut'],
+            );
+            self::assertSame(['Invoke'], array_column($host->received, 'method'));
+        } finally {
+            $harness->close();
+            $host->close();
+        }
+    }
+
     public function testCallbacksInFlightAtTheDeadlineEndWithDeadlineExceededAndCallerCancellationWithCancelled(): void
     {
         // 宿主慢于截止时间：回调发出之后一直不应答，直到被取消
