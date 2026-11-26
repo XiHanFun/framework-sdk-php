@@ -18,7 +18,7 @@ final class ConformanceTest extends TestCase
     /** 运行器的全部用例，按执行顺序 */
     private const array CASES = [
         'handshake', 'refusal', 'session', 'lifecycle', 'order', 'unknown-operation', 'declared-operations',
-        'unavailable', 'event', 'unsubscribed', 'stream', 'configuration', 'stop-early', 'stdin',
+        'unavailable', 'event', 'event-envelope', 'unsubscribed', 'stream', 'configuration', 'stop-early', 'stdin',
     ];
 
     public function testEchoPassesTheBlackBoxRunner(): void
@@ -47,6 +47,8 @@ final class ConformanceTest extends TestCase
                 '--config', '{"greeting":"hello"}',
                 '--sample', 'echoes.create={"text":"hi"}',
                 '--exclude', 'echoes.crash',
+                // event-envelope 经回显信封的操作核对 data_schema 原样交给作者（invocation.md §7，ADR-0327）
+                '--envelopes', 'events.list',
             ], $root . '/spec/conformance');
         } finally {
             self::remove($directory);

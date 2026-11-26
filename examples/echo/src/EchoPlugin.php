@@ -35,7 +35,8 @@ use XiHan\Framework\Primitives\Unit;
  *
  * 操作都是一元的（流式操作等 RFC-0011 的流式契约，invocation.md §1）：echoes.create（回声文本并附上配置的问候语与
  * 上下文）、echoes.relay（经宿主回调调用另一个操作）、echoes.crash（故意让进程异常退出，运行器以 --exclude 排除）、
- * events.list（列出收到的事件 ID）、events.publish（经宿主发布一条消息）。订阅 echo.events（竞争），同一主题的
+ * events.list（列出收到的事件 ID 与作者拿到的信封，黑盒运行器以 --envelopes events.list 核对 data_schema 原样交给作者，
+ * invocation.md §7）、events.publish（经宿主发布一条消息）。订阅 echo.events（竞争），同一主题的
  * echo.cleared 用广播。健康项 echo。配置节 XiHan:Echo 的 Greeting 按 ASCII 不区分大小写读。
  */
 final class EchoPlugin
@@ -43,12 +44,12 @@ final class EchoPlugin
     /** 清单 ID。 */
     public const string ID = 'xihan.samples.echo-php';
 
-    /** 记下的事件 ID 的上限：超过时丢掉最早的，内存不随投递增长 */
+    /** 记下的投递的上限：超过时丢掉最早的，内存不随投递增长 */
     private const int MAX_EVENTS = 1000;
 
     private string $greeting = '';
 
-    /** @var list<string> */
+    /** @var list<array{id: string, dataSchema: ?string}> 每次投递作者拿到的信封 ID 与 dataschema（没有为 null） */
     private array $events = [];
 
     private function __construct(private readonly Logger $logger)
@@ -188,13 +189,16 @@ final class EchoPlugin
     }
 
     /**
-     * 列出收到的事件 ID。
+     * 列出收到的事件 ID 与同样先后的信封（ID 与 dataschema，没有时为 null）。
      *
-     * @return Result<array{ids: list<string>}>
+     * @return Result<array{ids: list<string>, envelopes: list<array{id: string, dataSchema: ?string}>}>
      */
     private function list(Context $context, JsonObject $request): Result
     {
-        return Result::ok(['ids' => $this->events]);
+        return Result::ok([
+            'ids' => array_column($this->events, 'id'),
+            'envelopes' => $this->events,
+        ]);
     }
 
     /**
@@ -219,13 +223,16 @@ final class EchoPlugin
     }
 
     /**
-     * 记下投递的事件 ID；至少一次投递，同一个 ID 可能到多次。
+     * 记下投递的事件 ID 与作者拿到的 dataschema；至少一次投递，同一个 ID 可能到多次。
      *
      * @return Result<Unit>
      */
     private function handleEvent(Context $context, Envelope $envelope, int $attempt): Result
     {
-        $this->events[] = $envelope->id;
+        $this->events[] = [
+            'id' => $envelope->id,
+            'dataSchema' => $envelope->dataSchema === '' ? null : $envelope->dataSchema,
+        ];
         if (count($this->events) > self::MAX_EVENTS) {
             array_shift($this->events);
         }
