@@ -53,6 +53,28 @@ final class Json
     }
 
     /**
+     * 写线上编码（RFC-0001「写出与转交」，ADR-0320）：同 encode()，写完再过 JSON 文本的共同检查（JsonText::check）。
+     *
+     * Result 与 Error 的线上编码、插件协议的错误细节用它：不是合法的 UTF-8（含编成 UTF-8 的代理项）由 json_encode 先报，
+     * 嵌套超过 64 层（RawJson 原样放回的原文也算，从值的根算起）或任何一层有重复的成员名同样写不出，对方读不进的文本
+     * 不交出去。json_encode 在 512 层以内照写，RawJson 的原文又是事后换回去的，所以写完之后核对整段文本。
+     *
+     * @throws \JsonException 写不出
+     */
+    public static function encodeChecked(mixed $value): string
+    {
+        $text = self::encode($value);
+        $problem = JsonText::check($text);
+        if ($problem !== null) {
+            throw new \JsonException($problem->syntax
+                ? sprintf('The JSON text cannot be written: it nests more than %d levels.', JsonText::MAX_DEPTH)
+                : sprintf("The JSON text cannot be written: the member '%s' appears more than once.", $problem->path));
+        }
+
+        return $text;
+    }
+
+    /**
      * 写一个值：json_encode 写不了原文与 JsonObject，先写成只在这次调用里出现的占位字符串，再换回它们的文本。
      *
      * @throws \JsonException

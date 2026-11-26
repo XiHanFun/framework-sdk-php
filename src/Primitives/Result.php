@@ -355,11 +355,14 @@ final readonly class Result implements \JsonSerializable, \Stringable
     /**
      * 写成线上编码的 JSON 文本：整数值的浮点带小数点、非有限的浮点写成字符串，对方按值模型读回同样的值（ADR-0236）。
      *
-     * @throws \JsonException 值写不成 JSON
+     * 写出是严格的（RFC-0001「写出与转交」，ADR-0320）：成功值或错误里的字符串不是合法的 UTF-8，从结果的根算起嵌套超过
+     * 64 层（成功值的最外层是第 2 层），或任何一层有重复的成员名时写不出，不写成 U+FFFD。
+     *
+     * @throws \JsonException 值写不成合法的 JSON 文本
      */
     public function toJson(): string
     {
-        return Json::encode($this);
+        return Json::encodeChecked($this);
     }
 
     /**

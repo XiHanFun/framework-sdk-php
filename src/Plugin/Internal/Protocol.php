@@ -38,6 +38,8 @@ final class Protocol
     /**
      * 把错误写成协议的 Error（invocation.md §3「写出」）：code 与 message_key 原样；带消息键的错误 text 留空，由宿主按目录
      * 翻译成调用方的语言（RFC-0010），只有自由文本错误写 text；details 是参数与细节的 JSON 对象文本，没有时为空；inner 同样写出。
+     * 细节写不出（不是合法的 UTF-8，或写出的文本没过共同检查：超过 64 层）时这个错误不带细节，其余字段照写，内部错误的细节
+     * 各自核对（RFC-0001「写出与转交」，ADR-0320）。
      */
     public static function toProtoError(Error $error): V1\Error
     {
@@ -50,9 +52,9 @@ final class Protocol
         }
         if ($error->details !== []) {
             try {
-                $encoded->setDetails(Json::encode(JsonObject::of($error->details)));
+                $encoded->setDetails(Json::encodeChecked(JsonObject::of($error->details)));
             } catch (\JsonException) {
-                // 细节写不成 JSON（非法 UTF-8）：宿主仍能按码与键处理，只是没有参数
+                // 细节写不成合法的 JSON 文本（非法 UTF-8、超过 64 层）：宿主仍能按码与键处理，只是没有参数
             }
         }
         if ($error->inner !== null) {

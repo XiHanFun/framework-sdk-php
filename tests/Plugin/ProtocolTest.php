@@ -13,6 +13,7 @@ use XiHan\Framework\Plugin\HealthStatus;
 use XiHan\Framework\Plugin\Internal\Protocol;
 use XiHan\Framework\Plugin\Protocol\V1;
 use XiHan\Framework\Primitives\Error;
+use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\LifecycleState;
 use XiHan\Framework\Primitives\MessageCatalog;
 use XiHan\Framework\Primitives\MessageScope;
@@ -48,6 +49,42 @@ final class ProtocolTest extends TestCase
         self::assertSame('', $literal->getDetails());
         $kernel = Protocol::toProtoError(Error::notFound('KERNEL_NOTFOUND_001', 'kernel.operation.unknown', ['id' => 'x.y']));
         self::assertSame('', $kernel->getText());
+    }
+
+    public function testErrorDetailsThatCannotBeWrittenAreLeftOut(): void
+    {
+        // invocation.md §3「写出 Error」（ADR-0320）：细节不是合法的 UTF-8（含编成 UTF-8 的代理项）或写出的文本超过 64 层时
+        // 这个错误不带细节，其余字段照写；内部错误的细节各自核对
+        $inner = Error::validation('SAMPLES_VALIDATION_002', 'samples.inner', ['id' => 'i1']);
+        // 细节在构造时核对 UTF-8，JsonObject 里的值不核对，非法的字节从这里进来
+        $unwritable = [
+            'high surrogate' => ['a' => JsonObject::of(['v' => "\xED\xA0\x80"])],
+            'low surrogate name' => ['a' => JsonObject::of(["\xED\xB0\x80" => 1])],
+            'truncated' => ['list' => ['x', JsonObject::of(['v' => "\xC3"])]],
+            'deep' => ['a' => self::nested(64)],
+        ];
+        foreach ($unwritable as $name => $details) {
+            $written = Protocol::toProtoError(Error::unexpected('SAMPLES_UNEXPECTED_001', 'samples.failed', $details, $inner));
+            self::assertSame('', $written->getDetails(), $name);
+            self::assertSame('SAMPLES_UNEXPECTED_001', $written->getCode(), $name);
+            self::assertSame('samples.failed', $written->getMessageKey(), $name);
+            self::assertSame('{"id":"i1"}', $written->getInner()?->getDetails(), $name);
+            $literal = Protocol::toProtoError(Error::literal('SAMPLES_CONFLICT_001', 'stale', $details));
+            self::assertSame(['', 'stale'], [$literal->getDetails(), $literal->getText()], $name);
+            $outer = Protocol::toProtoError(Error::unexpected(
+                'SAMPLES_UNEXPECTED_001',
+                'samples.failed',
+                ['id' => 'o1'],
+                Error::literal('SAMPLES_VALIDATION_002', 'x', $details),
+            ));
+            self::assertSame('{"id":"o1"}', $outer->getDetails(), $name);
+            self::assertSame('', $outer->getInner()?->getDetails(), $name);
+        }
+        // 64 层的细节照写
+        self::assertSame(
+            '{"a":' . str_repeat('{"a":', 62) . '{}' . str_repeat('}', 62) . '}',
+            Protocol::toProtoError(Error::literal('SAMPLES_CONFLICT_001', 'stale', ['a' => self::nested(63)]))->getDetails(),
+        );
     }
 
     public function testErrorsFromTheHostAreReadPerTheRules(): void
@@ -143,5 +180,18 @@ final class ProtocolTest extends TestCase
         self::assertInstanceOf(V1\HealthItem::class, $item);
         self::assertSame(3, $item->getStatus());
         self::assertSame('down', $item->getDescription());
+    }
+
+    /**
+     * 嵌套 `$levels` 层的对象：1 层是 `{}`。
+     */
+    private static function nested(int $levels): JsonObject
+    {
+        $value = JsonObject::of();
+        for ($level = 1; $level < $levels; $level++) {
+            $value = JsonObject::of(['a' => $value]);
+        }
+
+        return $value;
     }
 }

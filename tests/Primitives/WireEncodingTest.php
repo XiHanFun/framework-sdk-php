@@ -9,6 +9,7 @@ use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\ErrorCode;
 use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonObject;
+use XiHan\Framework\Primitives\RawJson;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Tests\Vectors;
 
@@ -167,6 +168,45 @@ final class WireEncodingTest extends TestCase
         $object['b'] = 2;
     }
 
+    public function testWireEncodingsThatCannotBeWrittenThrow(): void
+    {
+        // RFC-0001「写出与转交」（ADR-0320）：不是合法的 UTF-8（含编成 UTF-8 的代理项）、从结果或错误的根算起超过 64 层、
+        // 任何一层的重复成员都写不出，不写成 U+FFFD 或转义
+        $unwritable = [
+            'error text' => static fn (): string => Error::literal('ORDERS_CONFLICT_001', "stale\xED\xA0\x80")->toJson(),
+            // 细节在构造时核对 UTF-8，JsonObject 里的值不核对，从这里进来
+            'error details' => static fn (): string => Error::validation(
+                'ORDERS_VALIDATION_001',
+                'orders.invalid',
+                ['id' => JsonObject::of(['v' => "\xC3"])],
+            )->toJson(),
+            'error depth' => static fn (): string => Error::literal('ORDERS_CONFLICT_001', 'deep', ['a' => self::nested(63)])->toJson(),
+            'result value' => static fn (): string => Result::ok("x\xED\xB0\x80")->toJson(),
+            'result depth' => static fn (): string => Result::ok(self::nested(64))->toJson(),
+            'raw depth' => static fn (): string => Result::ok(['raw' => RawJson::of(str_repeat('[', 63) . str_repeat(']', 63))])->toJson(),
+            'raw duplicate' => static fn (): string => Result::ok(RawJson::checked('{"a":1,"a":2}'))->toJson(),
+            'failure depth' => static fn (): string => Result::fail(
+                Error::literal('ORDERS_CONFLICT_001', 'deep', ['a' => self::nested(62)]),
+            )->toJson(),
+        ];
+        foreach ($unwritable as $name => $write) {
+            try {
+                $write();
+                self::fail(sprintf('%s must not be written.', $name));
+            } catch (\JsonException) {
+                // 写不出：不交出文本
+            }
+        }
+        // 上限本身照写：结果 1 层、成功值 63 层；错误 1 层、细节 63 层；失败的结果里细节 62 层
+        self::assertSame(
+            '{"ok":true,"value":' . str_repeat('{"a":', 62) . '{}' . str_repeat('}', 62) . '}',
+            Result::ok(self::nested(63))->toJson(),
+        );
+        Error::literal('ORDERS_CONFLICT_001', 'deep', ['a' => self::nested(62)])->toJson();
+        Result::fail(Error::literal('ORDERS_CONFLICT_001', 'deep', ['a' => self::nested(61)]))->toJson();
+        Result::ok(['raw' => RawJson::of(str_repeat('[', 62) . str_repeat(']', 62))])->toJson();
+    }
+
     public function testTheSdkWritesTheCanonicalForms(): void
     {
         self::assertSame('{"ok":true}', json_encode(Result::success(), JSON_THROW_ON_ERROR));
@@ -174,6 +214,19 @@ final class WireEncodingTest extends TestCase
         self::assertSame('{"ok":true,"value":null}', json_encode(Result::ok(\XiHan\Framework\Primitives\Maybe::none()), JSON_THROW_ON_ERROR));
         self::assertSame('Ok()', (string) Result::success());
         self::assertTrue(Result::unitFromJson('{"ok":true}')->isOk());
+    }
+
+    /**
+     * 嵌套 `$levels` 层的对象：1 层是 `{}`。
+     */
+    private static function nested(int $levels): JsonObject
+    {
+        $value = JsonObject::of();
+        for ($level = 1; $level < $levels; $level++) {
+            $value = JsonObject::of(['a' => $value]);
+        }
+
+        return $value;
     }
 
     /**

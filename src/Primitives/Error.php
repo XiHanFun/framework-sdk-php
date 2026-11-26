@@ -329,11 +329,14 @@ final readonly class Error implements \JsonSerializable, \Stringable
     /**
      * 写成线上编码的 JSON 文本：整数值的浮点带小数点、非有限的浮点写成字符串，对方按值模型读回同样的值（ADR-0236）。
      *
-     * @throws \JsonException 细节写不成 JSON
+     * 写出是严格的（RFC-0001「写出与转交」，ADR-0320）：文案、细节或内部错误里的字符串不是合法的 UTF-8，或从错误的根算起
+     * 嵌套超过 64 层时写不出，不写成 U+FFFD。
+     *
+     * @throws \JsonException 写不成合法的 JSON 文本
      */
     public function toJson(): string
     {
-        return Json::encode($this);
+        return Json::encodeChecked($this);
     }
 
     private static function invalidMember(string $member, string $requirement): InvalidArgumentException
