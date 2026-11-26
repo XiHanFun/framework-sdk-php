@@ -26,6 +26,7 @@ use XiHan\Framework\Primitives\Error;
 use XiHan\Framework\Primitives\FrameworkInfo;
 use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\LifecycleState;
+use XiHan\Framework\Primitives\RawJson;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Stability;
 use XiHan\Framework\Tests\Vectors;
@@ -295,6 +296,50 @@ final class RuntimeTest extends TestCase
         } finally {
             $harness->close();
         }
+    }
+
+    public function testResponsesThatDoNotPassTheJsonTextChecksFailInThePlugin(): void
+    {
+        // 写出的整段文本要过共同检查（invocation.md §1「插件一侧写出应答」，ADR-0319）：嵌套超过 64 层（RawJson 原样嵌进去的文本
+        // 也算）经 Status.error 报 unhandled_exception，没有参数、不带 inner，payload 为空，不交给宿主去拒绝
+        $harness = $this->started();
+        try {
+            foreach (['deep', 'raw-deep'] as $id) {
+                $failed = $harness->invoke('items.get', '{"id":"' . $id . '"}');
+                $status = $failed->getStatus();
+                self::assertNotNull($status, $id);
+                self::assertFalse($status->getOk(), $id);
+                self::assertSame('', $failed->getPayload(), $id);
+                $error = $status->getError();
+                self::assertSame(
+                    ['code' => 'KERNEL_UNEXPECTED_001', 'key' => 'kernel.invocation.unhandled_exception', 'text' => '', 'details' => null],
+                    Harness::error($error),
+                    $id,
+                );
+                self::assertFalse($error?->hasInner(), $id);
+            }
+            // 恰好 64 层照常写出
+            $written = $harness->invoke('items.get', '{"id":"limit"}');
+            self::assertTrue($written->getStatus()?->getOk());
+            self::assertSame(str_repeat('[', 64) . str_repeat(']', 64), $written->getPayload());
+        } finally {
+            $harness->close();
+        }
+    }
+
+    /**
+     * `$depth` 层嵌套的空数组，最外层是第 1 层。
+     *
+     * @return list<mixed>
+     */
+    private static function nested(int $depth): array
+    {
+        $value = [];
+        for ($level = 1; $level < $depth; $level++) {
+            $value = [$value];
+        }
+
+        return $value;
     }
 
     public function testSessionTokenIsCheckedBeforeAnything(): void
@@ -640,11 +685,15 @@ final class RuntimeTest extends TestCase
             if ($request['id'] === 'missing') {
                 return Result::fail(Error::notFound('ITEMS_NOTFOUND_001', 'items.item.missing', ['id' => 'missing']));
             }
-            // 写不成合法 JSON 文本的应答：值、键与数组元素里不是合法 UTF-8 的字节
+            // 写不成合法 JSON 文本的应答：值、键与数组元素里不是合法 UTF-8 的字节，嵌套超过 64 层（RawJson 的原文从根算起）；
+            // limit 恰好 64 层，照常写出
             $unwritable = match ($request['id']) {
                 'surrogate' => ['id' => "a\xED\xA0\x80"],
                 'byte-key' => ["\xFF" => 'b'],
                 'element' => ['items' => ['c', "\xFF"]],
+                'deep' => ['items' => self::nested(64)],
+                'raw-deep' => [[RawJson::of(str_repeat('[', 63) . str_repeat(']', 63))]],
+                'limit' => self::nested(64),
                 default => null,
             };
             if ($unwritable !== null) {

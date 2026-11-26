@@ -27,6 +27,7 @@ use XiHan\Framework\Primitives\InvalidArgumentException;
 use XiHan\Framework\Primitives\JsonObject;
 use XiHan\Framework\Primitives\OperationId;
 use XiHan\Framework\Primitives\PipelineStage;
+use XiHan\Framework\Primitives\RawJson;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Primitives\Stability;
 
@@ -322,6 +323,57 @@ final class InvokerTest extends TestCase
         self::assertSame('{"' . $text . '":["' . $text . '","é"]}', $invoker->invoke(Context::create(), new Request('values.text'))->payload);
     }
 
+    public function testResponsesThatDoNotPassTheJsonTextChecksAreNotWritten(): void
+    {
+        // 写出的整段文本要过 RFC-0001「JSON 文本」的共同检查（RFC-0011 规则 10「编码」，ADR-0319）：嵌套超过 64 层（RawJson 原样
+        // 嵌进去的文本也算，从响应的根算起）同样写不出，以 unhandled_exception 结束，不带 inner，没有载荷；json_encode 在 512 层
+        // 以内照写。数组、JsonObject 与对象写不出重复的成员名，RawJson::of 也拒收，只有绕过它的原文才会带进来
+        $unwritable = [
+            'depths.arrays' => self::nested(65),
+            'depths.scalar' => self::nested(65, 1),
+            'depths.objects' => self::nestedObjects(65),
+            'depths.members' => self::nestedMembers(65),
+            // 10 层数组里嵌 60 层的原文：从根算起是 70 层，原文自己没超过 64 层
+            'depths.raw' => self::nested(10, RawJson::of(self::arrays(60))),
+            'depths.raw-member' => ['raw' => RawJson::of(self::arrays(64))],
+            'members.raw' => ['raw' => RawJson::checked('{"a":1,"a":2}')],
+        ];
+        $writable = [
+            'depths.arrays-at-limit' => [self::nested(64), self::arrays(64)],
+            'depths.scalar-at-limit' => [self::nested(64, 1), str_repeat('[', 64) . '1' . str_repeat(']', 64)],
+            'depths.objects-at-limit' => [self::nestedObjects(64), str_repeat('{"a":', 63) . '{}' . str_repeat('}', 63)],
+            'depths.members-at-limit' => [self::nestedMembers(64), str_repeat('{"a":', 63) . '{}' . str_repeat('}', 63)],
+            'depths.raw-at-limit' => [self::nested(4, RawJson::of(self::arrays(60))), self::arrays(64)],
+        ];
+        $registry = new Registry();
+        foreach ($unwritable as $id => $value) {
+            $registry->add(new Contract($id), static fn (Context $context, JsonObject $request): Result => Result::ok($value));
+        }
+        foreach ($writable as $id => [$value]) {
+            $registry->add(new Contract($id), static fn (Context $context, JsonObject $request): Result => Result::ok($value));
+        }
+        $invoker = new Invoker($registry);
+        foreach (array_keys($unwritable) as $id) {
+            $descriptor = $registry->find($id);
+            self::assertNotNull($descriptor, $id);
+            foreach ([$invoker->invoke(Context::create(), new Request($id)), $descriptor->execute(Context::create(), '')] as $response) {
+                $error = $response->outcome->error();
+                self::assertNotNull($error, $id);
+                self::assertSame(OperationErrors::UNEXPECTED, $error->code, $id);
+                self::assertSame('kernel.invocation.unhandled_exception', $error->messageKey, $id);
+                self::assertSame([], $error->details, $id);
+                self::assertNull($error->inner, $id);
+                self::assertNull($response->payload, $id);
+            }
+        }
+        // 恰好 64 层照常写出：最里面有值也一样，差一层都不行
+        foreach ($writable as $id => [, $payload]) {
+            $response = $invoker->invoke(Context::create(), new Request($id));
+            self::assertTrue($response->outcome->isOk(), $id);
+            self::assertSame($payload, $response->payload, $id);
+        }
+    }
+
     public function testCallsRestoreTheItemsTheyReplace(): void
     {
         $registry = new Registry();
@@ -597,6 +649,57 @@ final class InvokerTest extends TestCase
         self::assertSame('array', Codec::typed(CreateOrder::class, CreateOrder::shape(), $create, 'array')->responseType);
         $this->expectException(InvalidArgumentException::class);
         Codec::typed(CreateOrder::class, Shape::listOf(Shape::int32()), $create, 'array');
+    }
+
+    /**
+     * `$depth` 层嵌套的数组，最外层是第 1 层；最里面一层是空数组，或只有 `$innermost` 一项。
+     *
+     * @return list<mixed>
+     */
+    private static function nested(int $depth, mixed $innermost = null): array
+    {
+        $value = $innermost === null ? [] : [$innermost];
+        for ($level = 1; $level < $depth; $level++) {
+            $value = [$value];
+        }
+
+        return $value;
+    }
+
+    /**
+     * `$depth` 层嵌套的关联数组（写成对象），最里面是空的 JsonObject。
+     *
+     * @return array<string, mixed>
+     */
+    private static function nestedObjects(int $depth): array
+    {
+        $value = ['a' => JsonObject::of([])];
+        for ($level = 2; $level < $depth; $level++) {
+            $value = ['a' => $value];
+        }
+
+        return $value;
+    }
+
+    /**
+     * `$depth` 层嵌套的 JsonObject，最里面是空的 JsonObject。
+     */
+    private static function nestedMembers(int $depth): JsonObject
+    {
+        $value = JsonObject::of([]);
+        for ($level = 1; $level < $depth; $level++) {
+            $value = JsonObject::of(['a' => $value]);
+        }
+
+        return $value;
+    }
+
+    /**
+     * `$depth` 层嵌套的空数组的文本。
+     */
+    private static function arrays(int $depth): string
+    {
+        return str_repeat('[', $depth) . str_repeat(']', $depth);
     }
 
     private static function invoker(?PipelineBuilder $builder): Invoker

@@ -157,7 +157,9 @@ final readonly class Codec
      * 编码响应（RFC-0011 规则 10「编码」）；写不出时返回 KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception，
      * 编码函数抛出的是框架异常时它的错误放进 inner。
      *
-     * 整数值的浮点带小数点，RawJson 原样放回；非有限的浮点写不出，不写成 null 或字符串。
+     * 整数值的浮点带小数点，RawJson 原样放回；非有限的浮点写不出，不写成 null 或字符串。写出的整段文本还要过 RFC-0001
+     * 「JSON 文本」的共同检查（JsonText::check）：嵌套超过 64 层（RawJson 原样嵌进去的文本也算，从响应的根算起）或有重复
+     * 的成员名同样写不出，错误不带 inner（ADR-0319）。
      *
      * @param TResponse $response
      *
@@ -166,10 +168,17 @@ final readonly class Codec
     public function encode(string $id, mixed $response): Result
     {
         try {
-            return Result::ok(Json::encode(($this->encode)($response), false));
+            $text = Json::encode(($this->encode)($response), false);
         } catch (\Throwable $exception) {
             return Result::fail(KernelErrors::unhandledException($exception));
         }
+        // json_encode 在 512 层以内照写，RawJson 的原文又是事后换回去的，整段的层数只有写完才知道，所以写完之后核对整段
+        // 文本；没有异常可带，错误不带 inner
+        if (JsonText::check($text) !== null) {
+            return Result::fail(KernelErrors::unhandledException());
+        }
+
+        return Result::ok($text);
     }
 
     /**

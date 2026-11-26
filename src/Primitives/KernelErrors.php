@@ -84,9 +84,9 @@ final class KernelErrors
      * 调用期间抛出的异常：KERNEL_UNEXPECTED_001 + kernel.invocation.unhandled_exception（RFC-0011 规则 5）。
      *
      * 框架异常的错误作为内部错误带上；其他异常除了「发生过」什么都不上线（消息可能含路径、连接串），原始异常要记日志时在
-     * Observe 阶段的中间件里捕获。
+     * Observe 阶段的中间件里捕获。没有异常时（写出的响应文本没过 JSON 文本的共同检查，ADR-0319）不带 inner。
      */
-    public static function unhandledException(\Throwable $exception): Error
+    public static function unhandledException(?\Throwable $exception = null): Error
     {
         $inner = $exception instanceof FrameworkException ? $exception->toError() : null;
 
