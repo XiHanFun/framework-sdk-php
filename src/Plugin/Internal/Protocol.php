@@ -31,6 +31,9 @@ use XiHan\Framework\Primitives\Unit;
  */
 final class Protocol
 {
+    /** 替换字符 U+FFFD 的 UTF-8 编码：写出错误文案时换掉不是合法 UTF-8 的部分（ADR-0339） */
+    private const string REPLACEMENT = "\xEF\xBF\xBD";
+
     private function __construct()
     {
     }
@@ -39,7 +42,9 @@ final class Protocol
      * 把错误写成协议的 Error（invocation.md §3「写出」）：code 与 message_key 原样；带消息键的错误 text 留空，由宿主按目录
      * 翻译成调用方的语言（RFC-0010），只有自由文本错误写 text；details 是参数与细节的 JSON 对象文本，没有时为空；inner 同样写出。
      * 细节写不出（不是合法的 UTF-8，或写出的文本没过共同检查：超过 64 层）时这个错误不带细节，其余字段照写，内部错误的细节
-     * 各自核对（RFC-0001「写出与转交」，ADR-0320）。
+     * 各自核对（RFC-0001「写出与转交」，ADR-0320）。text 里不是合法 UTF-8 的部分按最大子部分换成 U+FFFD 写出，内部错误的
+     * 同此（invocation.md §3「写出 Error 的文案」，ADR-0339，见 replaceInvalidUtf8()）：protobuf 的 setText 遇到它会抛出，
+     * 整个错误写不出。
      */
     public static function toProtoError(Error $error): V1\Error
     {
@@ -48,7 +53,8 @@ final class Protocol
         if ($error->messageKey !== null) {
             $encoded->setMessageKey($error->messageKey);
         } elseif ($error->text !== null) {
-            $encoded->setText($error->text);
+            // 文案是自由文本，不拿来查找或比较：编不成合法 UTF-8 的部分换成 U+FFFD，不让整个回调、发布或应答写不出
+            $encoded->setText(self::replaceInvalidUtf8($error->text));
         }
         if ($error->details !== []) {
             try {
@@ -62,6 +68,64 @@ final class Protocol
         }
 
         return $encoded;
+    }
+
+    /**
+     * 把文本里不是合法 UTF-8 的部分换成 U+FFFD（invocation.md §3「写出 Error 的文案」，ADR-0339），合法的部分原样。
+     *
+     * 按 Unicode 标准 §3.9 的「最大子部分」：从不能解码的位置起，能成为某个合法 UTF-8 序列开头的最长前缀是一段，不能的一个
+     * 字节是一段，每一段换一个 U+FFFD。如 `F0 9F 98` 后面跟着 `62` 是一段、`ED A0 80`（编成 UTF-8 的代理项，`ED` 之后只能跟
+     * `80`–`9F`）是三段、`C0 AF` 是两段，与 .NET 的 `Encoding.UTF8.GetString`、Python 的 `bytes.decode('utf-8', 'replace')` 相同。
+     * SDK 不要求 ext-mbstring，所以不用 `mb_scrub`；`htmlspecialchars` 的 `ENT_SUBSTITUTE` 换法的粒度不同，也不用。
+     */
+    private static function replaceInvalidUtf8(string $text): string
+    {
+        // 合法的 UTF-8 原样交回：PCRE 的 UTF-8 校验同样拒绝过长编码、代理项与 U+10FFFF 以上的码位
+        if (preg_match('//u', $text) === 1) {
+            return $text;
+        }
+        $replaced = '';
+        $length = strlen($text);
+        $index = 0;
+        while ($index < $length) {
+            $lead = ord($text[$index]);
+            if ($lead < 0x80) {
+                $replaced .= $text[$index];
+                $index++;
+                continue;
+            }
+            // 序列的长度与第二个字节的范围按 Unicode 表 3-7：E0、ED、F0、F4 的第二个字节比 80–BF 窄
+            [$size, $low, $high] = match (true) {
+                $lead >= 0xC2 && $lead <= 0xDF => [2, 0x80, 0xBF],
+                $lead === 0xE0 => [3, 0xA0, 0xBF],
+                $lead === 0xED => [3, 0x80, 0x9F],
+                $lead >= 0xE1 && $lead <= 0xEF => [3, 0x80, 0xBF],
+                $lead === 0xF0 => [4, 0x90, 0xBF],
+                $lead === 0xF4 => [4, 0x80, 0x8F],
+                $lead >= 0xF1 && $lead <= 0xF3 => [4, 0x80, 0xBF],
+                default => [1, 0, 0],
+            };
+            // 往后数还能接上的字节：第二个字节按上面的范围，其余的按 80–BF；接不上或到了末尾即停
+            $taken = 1;
+            while ($taken < $size && $index + $taken < $length) {
+                $next = ord($text[$index + $taken]);
+                $from = $taken === 1 ? $low : 0x80;
+                $to = $taken === 1 ? $high : 0xBF;
+                if ($next < $from || $next > $to) {
+                    break;
+                }
+                $taken++;
+            }
+            if ($size > 1 && $taken === $size) {
+                $replaced .= substr($text, $index, $size);
+            } else {
+                // 不能开头的字节，或开了头却没有接完的前缀：这一段换一个 U+FFFD
+                $replaced .= self::REPLACEMENT;
+            }
+            $index += $taken;
+        }
+
+        return $replaced;
     }
 
     /**
