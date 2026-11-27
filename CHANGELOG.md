@@ -14,6 +14,7 @@
 
 ### 变更
 
+- **修复** 上下文的幂等键不是合法的 UTF-8 时，`Host::invoke` 与 `Host::publish` 在本地以 `plugins.process.failed` 失败、不发请求，不再抛 `Expect utf-8 encoding.`（ADR-0347）
 - **修复** 插件写给宿主的自由文本错误文案（含内部错误的）不是合法的 UTF-8 时按最大子部分换成 U+FFFD 写出，不再抛 `Expect utf-8 encoding.`、整个错误写不出（ADR-0339）
 - **修复** 回调客户端关闭之后，`Host::invoke` 与 `Host::publish` 在本地核对之后报 `plugins.host.unavailable`、不发请求，不再懒连接照常发出（ADR-0328）
 - **修复** 插件写给宿主的错误细节超过 64 层时不带细节，其余字段照写（ADR-0320）

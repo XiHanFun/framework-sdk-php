@@ -214,6 +214,76 @@ final class HostCallbackTest extends TestCase
         }
     }
 
+    public function testBaggageValuesThatAreNotValidUtf8SendNoCallback(): void
+    {
+        // invocation.md §5（ADR-0347）：要写进回调 metadata.baggage 的值不是合法的 UTF-8 即不发请求（只有幂等键可能带这样的值）；
+        // PHP 的字符串是字节串，孤立的代理项在这里是不合法的 UTF-8（如编成 UTF-8 的 ED A0 80），判定看整个值是不是合法的 UTF-8。
+        // 结果是 PLUGINS_UNEXPECTED_001 + plugins.process.failed，phase 与回调的其他失败相同，reason 与宿主一侧逐字相同、只点名键。
+        // 以前 protobuf 的 setBaggage 遇到它抛出，异常漏出回调
+        $host = new FakeHost();
+        $harness = $this->started((string) $host->endpoint());
+        try {
+            $this->scenario = static function (Context $context, Host $client): mixed {
+                $describe = static fn (Result $result): string => self::describe($result->error());
+                $envelopes = [new Envelope('a.b', '1', 'urn:x', 't'), new Envelope('a.b', '2', 'urn:x', 't')];
+                $invalid = [];
+                foreach (["k\xED\xA0\x80", "\xED\xB0\x80k", "k\xED\xA0\xBD\xED\xB8\x80", "k\xC0\xAF", "k\xF0\x9F\x98", "\xFF"] as $value) {
+                    $scoped = $context->withBaggage('xihan.idempotency-key', $value);
+                    $invalid[] = [
+                        self::describe($client->invoke($scoped, 'orders.get')->outcome->error()),
+                        array_map($describe, $client->publish($scoped, $envelopes)),
+                    ];
+                }
+                $bad = $context->withBaggage('xihan.idempotency-key', "k\xED\xA0\x80");
+                // 平面以外的字符是合法的四字节 UTF-8：照常发出
+                $valid = $context->withBaggage('xihan.idempotency-key', "k\xF0\x9F\x98\x80");
+                $expired = Context::create(deadline: new \DateTimeImmutable('-1 second'), baggage: $bad->baggage());
+                $source = new CancellationSource();
+                $source->cancel();
+                $cancelled = Context::create(cancellation: $source->cancellation(), baggage: $bad->baggage());
+                $result = [
+                    'invalid' => $invalid,
+                    'valid' => [
+                        self::describe($client->invoke($valid, 'orders.get')->outcome->error()),
+                        array_map($describe, $client->publish($valid, $envelopes)),
+                    ],
+                    // 先后：租户、截止时间与取消先失败的仍报它们
+                    'tenant' => array_map($describe, $client->publish($bad->withBaggage('xihan.tenant', 'intruder'), $envelopes)),
+                    'expired' => self::describe($client->invoke($expired, 'orders.get')->outcome->error()),
+                    'cancelled' => array_map($describe, $client->publish($cancelled, $envelopes)),
+                ];
+                // 已关闭的客户端：元数据的核对在发出这一步之前
+                $client->close();
+                $result['closed'] = [
+                    self::describe($client->invoke($bad, 'orders.get')->outcome->error()),
+                    array_map($describe, $client->publish($bad, $envelopes)),
+                ];
+
+                return $result;
+            };
+            $result = self::payload($harness->invoke('relay.run', '{}', ['xihan.tenant' => 't1']));
+            $reason = "baggage 'xihan.idempotency-key' has a lone surrogate and cannot be encoded as UTF-8";
+            $invoke = 'PLUGINS_UNEXPECTED_001 plugins.process.failed {"id":"xihan.tests.relay","phase":"orders.get","reason":"' . $reason . '"}';
+            $publish = 'PLUGINS_UNEXPECTED_001 plugins.process.failed {"id":"xihan.tests.relay","phase":"publish","reason":"' . $reason . '"}';
+            self::assertSame(array_fill(0, 6, [$invoke, [$publish, $publish]]), $result['invalid']);
+            self::assertSame(['ok', ['ok', 'ok']], $result['valid']);
+            $denied = 'PLUGINS_DENIED_002 plugins.callback.tenant_denied {"id":"xihan.tests.relay","tenant":"intruder"}';
+            self::assertSame([$denied, $denied], $result['tenant']);
+            self::assertSame('KERNEL_TIMEOUT_001 kernel.invocation.deadline_exceeded null', $result['expired']);
+            $cancelled = 'KERNEL_CANCELLED_001 kernel.invocation.cancelled null';
+            self::assertSame([$cancelled, $cancelled], $result['cancelled']);
+            self::assertSame([$invoke, [$publish, $publish]], $result['closed']);
+            // 只有合法的那一个幂等键到了宿主，原样
+            self::assertSame(['Invoke', 'Publish'], array_column($host->received, 'method'));
+            foreach ($host->received as $received) {
+                self::assertSame("k\xF0\x9F\x98\x80", $received['metadata']?->getBaggage()['xihan.idempotency-key']);
+            }
+        } finally {
+            $harness->close();
+            $host->close();
+        }
+    }
+
     public function testClosingTheClientCutsCallbacksInFlightAsUnavailable(): void
     {
         // invocation.md §5（ADR-0328）：回调途中客户端被释放、切断了进行中的回调，结果同样是「Cancelled，取消信号没有触发」那一行

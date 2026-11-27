@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Plugin\Internal;
 
 use XiHan\Framework\Invocation\CancellationReason;
+use XiHan\Framework\Invocation\Context;
 use XiHan\Framework\Operation\OperationErrors;
 use XiHan\Framework\Plugin\Host;
 use XiHan\Framework\Plugin\Internal\Grpc\GrpcStatus;
@@ -25,8 +26,43 @@ final class CallbackFailures
     /** Host.Publish。 */
     public const string PUBLISH = 'publish';
 
+    /**
+     * 要写进回调元数据的 Baggage 值不是合法的 UTF-8 时 plugins.process.failed 的 reason 模板（plugin-messages.json，
+     * invocation.md §5，ADR-0347）：`{key}` 换成键名，不带值；以字节存放字符串的实现也写这一段，与宿主一侧逐字相同。
+     */
+    public const string REASON_UNENCODABLE_BAGGAGE =
+        "baggage '{key}' has a lone surrogate and cannot be encoded as UTF-8";
+
     private function __construct()
     {
+    }
+
+    /**
+     * 回调元数据的核对（invocation.md §5，ADR-0347）：要写进 metadata.baggage 的值（Protocol::metadata() 写出的已登记的键）不是
+     * 合法的 UTF-8 即不发请求，结果是 PLUGINS_UNEXPECTED_001 + plugins.process.failed，`phase` 与回调的其他失败相同
+     * （Host.Invoke 为操作 ID，Host.Publish 为 publish）；都合法时为 null。
+     *
+     * PHP 的字符串是字节串，孤立的代理项在这里就是不合法的 UTF-8（如 `ED A0 80`）；protobuf 的 setBaggage 遇到它会抛出。只看是不是
+     * 合法的 UTF-8，不按 Baggage 值的完整约束判定：幂等键不受长度与控制字符的约束，完整判定会误拒。几个键都是这样时点名先遇到的一个。
+     */
+    public static function unencodableBaggage(
+        Context $context,
+        string $rpc,
+        string $pluginId,
+        string $operation,
+    ): ?Error {
+        foreach ($context->withoutUnregisteredBaggage()->baggage() as $key => $value) {
+            // PCRE 的 UTF-8 校验同样拒绝过长编码、代理项与 U+10FFFF 以上的码位
+            if (preg_match('//u', $value) !== 1) {
+                return PluginErrors::failed(
+                    $pluginId,
+                    $rpc === self::PUBLISH ? 'publish' : $operation,
+                    str_replace('{key}', (string) $key, self::REASON_UNENCODABLE_BAGGAGE),
+                );
+            }
+        }
+
+        return null;
     }
 
     /**

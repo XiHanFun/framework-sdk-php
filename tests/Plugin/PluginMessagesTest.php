@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace XiHan\Framework\Tests\Plugin;
 
 use PHPUnit\Framework\TestCase;
+use XiHan\Framework\Plugin\Internal\CallbackFailures;
 use XiHan\Framework\Plugin\PluginErrors;
 use XiHan\Framework\Plugin\PluginMessages;
 use XiHan\Framework\Primitives\Error;
@@ -55,7 +56,13 @@ final class PluginMessagesTest extends TestCase
             self::assertIsString($reason->reason);
             $reasons[] = $reason->reason;
         }
-        foreach ([PluginErrors::REASON_NOT_AN_OBJECT, PluginErrors::REASON_NO_ENDPOINT, PluginErrors::REASON_NO_ERROR] as $reason) {
+        $fixed = [
+            PluginErrors::REASON_NOT_AN_OBJECT,
+            PluginErrors::REASON_NO_ENDPOINT,
+            PluginErrors::REASON_NO_ERROR,
+            CallbackFailures::REASON_UNENCODABLE_BAGGAGE,
+        ];
+        foreach ($fixed as $reason) {
             self::assertContains($reason, $reasons);
         }
         self::assertContains("invalid error code '{code}'", $reasons);

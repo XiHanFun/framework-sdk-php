@@ -26,8 +26,9 @@ use XiHan\Framework\Primitives\Unit;
  * 回调端点是 XIHAN_PLUGIN_HOST_ADDRESS 里第一个本 SDK 能连的项（handshake.md §4），启动时选定、之后不换；没有可用的端点时
  * 每次回调都以 PLUGINS_UNAVAILABLE_001 + plugins.host.unavailable 失败、不发请求。发出之前按宿主的顺序在本地核对：所需权限
  * 既在清单 permissions 里、也在 Configure 授予的权限里，回调上下文的租户是插件此刻正在处理的某个调用或投递的租户；不合的
- * 不发给宿主，结果与宿主拒绝时相同（PLUGINS_DENIED_002）。gRPC 状态按 invocation.md §5 的表转成错误。运行时在每次调用与
- * 投递的上下文里放入它，取用 Host::of($context)。
+ * 不发给宿主，结果与宿主拒绝时相同（PLUGINS_DENIED_002）；截止时间已过或已被取消的也不发出；要写进 metadata.baggage 的值
+ * 不是合法的 UTF-8 时以 plugins.process.failed 失败、不发出（ADR-0347）。gRPC 状态按 invocation.md §5 的表转成错误。运行时
+ * 在每次调用与投递的上下文里放入它，取用 Host::of($context)。
  */
 final class Host
 {
@@ -100,13 +101,17 @@ final class Host
      * 以插件身份经宿主的完整管道调用一个操作（需要权限 capability:kernel.pipeline）。
      *
      * 上下文的截止时间（gRPC 截止时间与它相同）、追踪与已登记的 Baggage 随调用传给宿主，调用方的取消即取消回调。
+     * 要写进 metadata.baggage 的值（已登记的键；实际上只有幂等键可能带这样的值）不是合法的 UTF-8 时不发请求，结果为
+     * PLUGINS_UNEXPECTED_001 + plugins.process.failed（`phase` 为操作 ID，`reason` 为
+     * `baggage '<键>' has a lone surrogate and cannot be encoded as UTF-8`），排在截止时间与取消之后（invocation.md §5，ADR-0347）。
      * 客户端已关闭（运行时收尾）之后不发请求、不重新连接，结果为 plugins.host.unavailable，排在本地核对之后（ADR-0328）。
      *
      * @param string $payload 请求的 JSON；空等价于 `{}`
      */
     public function invoke(Context $context, string $operation, string $payload = ''): Response
     {
-        $refused = $this->refuse($context, CallbackFailures::INVOKE, $operation);
+        $refused = $this->refuse($context, CallbackFailures::INVOKE, $operation)
+            ?? CallbackFailures::unencodableBaggage($context, CallbackFailures::INVOKE, $this->pluginId, $operation);
         if ($refused !== null) {
             return new Response(Result::fail($refused), null);
         }
@@ -141,8 +146,9 @@ final class Host
      * 经宿主的消息代理发布消息（需要权限 capability:messaging.queue），结果与信封一一对应；空列表不发给宿主。
      *
      * 宿主以回调上下文为调用上下文发布，从上下文补齐信封缺的扩展属性（租户、主体、关联 ID、区域、追踪，RFC-0009）。
-     * 本地的两项核对与 RPC 的失败都是整批的结果；信封的 xihantenant 扩展不在本地核对，由宿主逐项判定。客户端已关闭之后
-     * 不发请求，每一项都是 plugins.host.unavailable（ADR-0328）。
+     * 本地的两项核对与 RPC 的失败都是整批的结果；信封的 xihantenant 扩展不在本地核对，由宿主逐项判定。元数据同样是整批的：
+     * 要写进 metadata.baggage 的值不是合法的 UTF-8 时每一项都是 plugins.process.failed（`phase` 为 publish，ADR-0347，见 invoke()）。
+     * 客户端已关闭之后不发请求，每一项都是 plugins.host.unavailable（ADR-0328）。
      *
      * @param list<Envelope> $envelopes
      *
@@ -154,7 +160,8 @@ final class Host
         if ($count === 0) {
             return [];
         }
-        $refused = $this->refuse($context, CallbackFailures::PUBLISH, '');
+        $refused = $this->refuse($context, CallbackFailures::PUBLISH, '')
+            ?? CallbackFailures::unencodableBaggage($context, CallbackFailures::PUBLISH, $this->pluginId, '');
         if ($refused !== null) {
             return array_fill(0, $count, Result::fail($refused));
         }
