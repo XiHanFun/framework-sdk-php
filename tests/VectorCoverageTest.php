@@ -36,6 +36,8 @@ final class VectorCoverageTest extends TestCase
         'plugin/envelope-times.json',
         // Plugin\ErrorReadingTest
         'plugin/error-reading.json',
+        // Plugin\ProtocolTest（bytes 一组，经 Protocol::toProtoError）
+        'plugin/error-text-writing.json',
         // Plugin\HandshakeVectorsTest
         'plugin/handshake-lines.json',
         // Plugin\HandshakeVectorsTest

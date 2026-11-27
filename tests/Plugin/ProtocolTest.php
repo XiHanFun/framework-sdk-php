@@ -19,6 +19,7 @@ use XiHan\Framework\Primitives\MessageCatalog;
 use XiHan\Framework\Primitives\MessageScope;
 use XiHan\Framework\Primitives\Result;
 use XiHan\Framework\Tests\Invocation\ManualClock;
+use XiHan\Framework\Tests\Vectors;
 
 /**
  * 协议消息与 SDK 类型的转换：错误的写出与读入（invocation.md §3，RFC-0001）、上下文的还原与回调的元数据
@@ -87,56 +88,48 @@ final class ProtocolTest extends TestCase
         );
     }
 
-    public function testTextThatIsNotValidUtf8IsWrittenWithReplacementCharacters(): void
+    public function testErrorTextsAreWrittenPerTheVector(): void
     {
-        // invocation.md §3「写出 Error 的文案」（ADR-0339）：text 里不是合法 UTF-8 的部分按最大子部分换成 U+FFFD，每一段换一个；
-        // 整条错误照常写出，code、message_key、details 与 inner 照写，不再因 setText 抛出而整个写不出
-        $r = "\xEF\xBF\xBD";
-        $cases = [
-            'truncated four bytes then b' => ["\xF0\x9F\x98b", $r . 'b'],
-            'encoded surrogate' => ["\xED\xA0\x80", $r . $r . $r],
-            'overlong' => ["\xC0\xAF", $r . $r],
-            'truncated at the end' => ["a\xE2\x82", 'a' . $r],
-            'E0 then a second byte out of range' => ["\xE0\x80", $r . $r],
-            'F4 then a second byte out of range' => ["\xF4\x90\x80\x80", $r . $r . $r . $r],
-            'byte that never starts a sequence' => ["x\xF5y\xFF", 'x' . $r . 'y' . $r],
-            'lone continuation' => ["\x80stale", $r . 'stale'],
-            'lead without continuation' => ["\xC3(", $r . '('],
-            'truncated four bytes at the end' => ["\xF1\x80\x80", $r],
-            'valid around invalid' => ["\xE2\x82\xAC\xFF\xE2\x82\xAC", "\xE2\x82\xAC" . $r . "\xE2\x82\xAC"],
-            'valid outside the plane' => ["smile \xF0\x9F\x98\x80", "smile \xF0\x9F\x98\x80"],
-            'already U+FFFD' => ['already ' . $r, 'already ' . $r],
-        ];
-        foreach ($cases as $name => [$text, $expected]) {
-            $inner = Error::literal('SAMPLES_VALIDATION_002', 'inner ' . $text, ['id' => 'i1']);
-            $error = Error::literal('SAMPLES_CONFLICT_001', $text, ['id' => 'o1'], $inner);
-            // 编码成字节再解回来：核对的是线上的样子
+        // error-text-writing.json 的 bytes 一组（invocation.md §3「写出 Error 的文案」，ADR-0339、ADR-0346）：PHP 的字符串是字节串，
+        // 不是合法 UTF-8 的部分按最大子部分换成 U+FFFD，每一段换一个，合法的部分（含 U+FFFD 本身）原样；经 toProtoError 写出后
+        // 编码成字节再解回来，核对的是线上的样子
+        $vector = Vectors::object('plugin/error-text-writing');
+        self::assertIsArray($vector->bytes);
+        self::assertNotSame([], $vector->bytes);
+        foreach ($vector->bytes as $case) {
+            self::assertInstanceOf(\stdClass::class, $case);
+            self::assertIsString($case->name);
+            self::assertIsString($case->hex);
+            self::assertIsString($case->expected);
+            $text = hex2bin($case->hex);
+            self::assertIsString($text, $case->name);
             $written = new V1\Error();
-            $written->mergeFromString(Protocol::toProtoError($error)->serializeToString());
-            self::assertSame($expected, $written->getText(), $name);
-            self::assertSame(['SAMPLES_CONFLICT_001', '', '{"id":"o1"}'], [$written->getCode(), $written->getMessageKey(), $written->getDetails()], $name);
-            self::assertSame('inner ' . $expected, $written->getInner()?->getText(), $name);
-            self::assertSame(['SAMPLES_VALIDATION_002', '{"id":"i1"}'], [$written->getInner()->getCode(), $written->getInner()->getDetails()], $name);
-            // 带消息键的错误不写 text，内部的自由文本错误照样替换；应答的 Status 同样写得出
-            $keyed = Error::unexpected('SAMPLES_UNEXPECTED_001', 'samples.failed', ['id' => 'o1'], $inner);
-            $status = new V1\Status();
-            $status->mergeFromString(Protocol::toStatus(Result::fail($keyed))->serializeToString());
-            self::assertFalse($status->getOk(), $name);
-            self::assertSame(['', 'samples.failed', '{"id":"o1"}'], [$status->getError()?->getText(), $status->getError()?->getMessageKey(), $status->getError()?->getDetails()], $name);
-            self::assertSame('inner ' . $expected, $status->getError()?->getInner()?->getText(), $name);
+            $written->mergeFromString(Protocol::toProtoError(Error::literal('SAMPLES_CONFLICT_001', $text))->serializeToString());
+            self::assertSame($case->expected, $written->getText(), $case->name);
         }
-        // 期望值与设了 U+FFFD 之后的 mb_scrub 相同（规范列出的参考之一）；SDK 不要求 ext-mbstring，有它时才对照
-        if (extension_loaded('mbstring')) {
-            $previous = mb_substitute_character();
-            mb_substitute_character(0xFFFD);
-            try {
-                foreach ($cases as $name => [$text, $expected]) {
-                    self::assertSame($expected, mb_scrub($text, 'UTF-8'), $name);
-                }
-            } finally {
-                mb_substitute_character($previous);
-            }
-        }
+    }
+
+    public function testReplacingTheTextKeepsTheOtherFieldsAndCoversInnerErrors(): void
+    {
+        // 向量只比文案本身（testErrorTextsAreWrittenPerTheVector）；这里核对整条错误照常写出（ADR-0339）：code、message_key、
+        // details 与 inner 照写，内部错误的文案同样替换；带消息键的错误不写 text，它内部的自由文本错误照样替换，应答的 Status
+        // 同样写得出，不再因 setText 抛出而整个写不出
+        $text = "stale\xED\xA0\x80";
+        $expected = "stale\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD";
+        $inner = Error::literal('SAMPLES_VALIDATION_002', 'inner ' . $text, ['id' => 'i1']);
+        $error = Error::literal('SAMPLES_CONFLICT_001', $text, ['id' => 'o1'], $inner);
+        $written = new V1\Error();
+        $written->mergeFromString(Protocol::toProtoError($error)->serializeToString());
+        self::assertSame($expected, $written->getText());
+        self::assertSame(['SAMPLES_CONFLICT_001', '', '{"id":"o1"}'], [$written->getCode(), $written->getMessageKey(), $written->getDetails()]);
+        self::assertSame('inner ' . $expected, $written->getInner()?->getText());
+        self::assertSame(['SAMPLES_VALIDATION_002', '{"id":"i1"}'], [$written->getInner()->getCode(), $written->getInner()->getDetails()]);
+        $keyed = Error::unexpected('SAMPLES_UNEXPECTED_001', 'samples.failed', ['id' => 'o1'], $inner);
+        $status = new V1\Status();
+        $status->mergeFromString(Protocol::toStatus(Result::fail($keyed))->serializeToString());
+        self::assertFalse($status->getOk());
+        self::assertSame(['', 'samples.failed', '{"id":"o1"}'], [$status->getError()?->getText(), $status->getError()?->getMessageKey(), $status->getError()?->getDetails()]);
+        self::assertSame('inner ' . $expected, $status->getError()?->getInner()?->getText());
     }
 
     public function testErrorsFromTheHostAreReadPerTheRules(): void
